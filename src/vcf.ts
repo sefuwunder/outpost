@@ -34,7 +34,9 @@ function parseProp(line: string): Prop | null {
   const head = line.slice(0, ci);
   let value = line.slice(ci + 1);
   const parts = head.split(";");
-  const name = parts[0].toUpperCase();
+  // Apple Contacts groups related props as item1.EMAIL / item1.X-ABLabel —
+  // strip the itemN. prefix so the property name matches.
+  const name = parts[0].toUpperCase().replace(/^ITEM\d+\./, "");
   const params = parts.slice(1).map((p) => p.toUpperCase());
   const isQP = params.some((p) => p === "ENCODING=QUOTED-PRINTABLE" || p === "ENCODING=Q");
   if (isQP) value = decodeQP(value.replace(/=$/, ""));

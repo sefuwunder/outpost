@@ -63,3 +63,25 @@ test("escapes unescaped", () => {
   expect(cards[0].name).toBe("A, B; C");
   expect(cards[0].note).toBe("line1\nline2");
 });
+
+test("apple contacts itemN. grouped properties", () => {
+  const cards = parseVcf(`BEGIN:VCARD
+VERSION:3.0
+N:Appleseed;Jane;;;
+FN:Jane Appleseed
+item1.EMAIL;type=INTERNET;type=HOME;type=pref:jane@home.com
+item1.X-ABLabel:_$!<Home>!$_
+item2.EMAIL;type=INTERNET;type=WORK:jane@work.com
+item2.X-ABLabel:_$!<Work>!$_
+item3.TEL;type=IPHONE;type=CELL;type=VOICE;type=pref:+1 555 010 9999
+item3.X-ABLabel:_$!<Mobile>!$_
+item4.ADR;type=HOME:;;123 Main St;Springfield;IL;62701;
+item4.X-ABLabel:_$!<Home>!$_
+END:VCARD`);
+  expect(cards.length).toBe(1);
+  const c = cards[0];
+  expect(c.name).toBe("Jane Appleseed");
+  expect(c.emails.length).toBe(2);
+  expect(pickEmail(c)).toBe("jane@home.com"); // PREF wins
+  expect(pickPhone(c)).toBe("+1 555 010 9999");
+});
