@@ -187,13 +187,18 @@ $("btn-contacts").addEventListener("click", async () => {
   state.view = "contacts";
   const list = $("conv-list");
   $("search").value = ""; state.q = "";
-  list.innerHTML = contacts.map((c) => `
+  list.innerHTML = `
+    <div style="padding:10px 16px 2px"><button id="btn-import-vcf" class="navbtn" style="padding:8px 0">Import from vCard (.vcf)</button></div>
+    <input type="file" id="vcf-file" accept=".vcf,.vcard,text/vcard" hidden>` +
+    contacts.map((c) => `
     <div class="conv" data-cid="${c.id}">
       <div class="dot"><i></i></div>
       <div class="avatar" style="${avatarStyle(c.name)}">${esc(initials(c.name))}</div>
       <div class="meta"><div class="row1"><h3>${esc(c.name)}</h3></div>
       <p>${esc([c.email, c.phone, c.matrix_id].filter(Boolean).join(" · "))}</p></div>
     </div>`).join("") || `<div class="empty">No contacts yet — tap ＋ to add one.</div>`;
+  $("btn-import-vcf").addEventListener("click", () => $("vcf-file").click());
+  $("vcf-file").addEventListener("change", importVcfFile);
   list.querySelectorAll(".conv").forEach((el) =>
     el.addEventListener("click", async () => {
       const { contacts: cs } = await api("/api/contacts");
@@ -203,6 +208,20 @@ $("btn-contacts").addEventListener("click", async () => {
   $("unknown-strip").hidden = true;
 });
 $("btn-new-contact").addEventListener("click", () => openContactForm(null));
+
+async function importVcfFile(e) {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const text = await f.text();
+    const r = await api("/api/contacts/import", { method: "POST", body: JSON.stringify({ vcf: text }) });
+    const bits = [`Imported ${r.imported.length} of ${r.total}`];
+    if (r.skipped.length) bits.push(`${r.skipped.length} skipped (${r.skipped.filter((s) => s.reason === "duplicate").length} already here)`);
+    alert(bits.join(" · "));
+  } catch (err) { alert("Import failed: " + err.message); }
+  e.target.value = "";
+  $("btn-contacts").click();
+}
 
 function openContactForm(c) {
   state.editing = c?.id || null;

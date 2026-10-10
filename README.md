@@ -28,7 +28,10 @@ browser — the settings API only returns booleans and non-secret fields.
   land in a "NEW" bucket at the top instead of being lost. Save as contact or
   dismiss.
 - **Contacts** — unlimited. Add email, phone (SMS rides Google Voice gateway
-  forwards, like Relay), Matrix ID + DM room.
+  forwards, like Relay), Matrix ID + DM room. Import a whole address book from
+  a `.vcf` file (👥 → Import from vCard): vCard 2.1/3.0/4.0, folded lines,
+  quoted-printable, FN/N fallback, PREF email/phone preference, dedupe by
+  email/phone with an imported/skipped report.
 - **Inbound poll** — IMAP UNSEEN sweep + Google Voice SMS harvest + Matrix
   `/sync` every 60s (best-effort per channel; a dead channel never sinks the
   sweep), plus a manual ⟳ button. Dedupe by external message id.
@@ -40,6 +43,8 @@ src/
   server.ts    — HTTP API + static + poll loop (Bun, zero deps)
   db.ts        — SQLite: contacts, conversations, messages, unknown_senders, settings
   channels.ts  — send routing + inbound matching (transports injectable for tests)
+  vcf.ts       — vCard 2.1/3.0/4.0 parser (pure)
+  import.ts    — vcf → contacts import with dedupe
   imap.ts      — IMAP client (shared with relay)
   smtp.ts      — SMTP send + Google Voice gateways (shared with relay)
   matrix.ts    — Matrix send/sync (shared with relay)
@@ -52,5 +57,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 12 tests — db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 20 tests — vcf parser, import dedupe, db CRUD/dedupe/unread, channel routing, poll matching
 ```

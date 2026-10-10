@@ -83,6 +83,12 @@ Bun.serve({
         conversationFor(c.id);
         return json({ contact: c });
       }
+      if (p === "/api/contacts/import" && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as { vcf?: string };
+        if (!b.vcf || typeof b.vcf !== "string" || b.vcf.length > 5_000_000) return bad("no vcf data");
+        const { importContactsFromVcf } = await import("./import");
+        return json(importContactsFromVcf(b.vcf));
+      }
       m = p.match(/^\/api\/contacts\/([\w-]+)$/);
       if (m && req.method === "PUT") {
         const b = await req.json().catch(() => ({})) as any;
