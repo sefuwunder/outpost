@@ -3,11 +3,17 @@
 
 import {
   getDb, setTriage, untriagedEmail, untriagedInbox, upsertNudge, pruneNudges, listActiveNudges,
-  listUnknown, type TriageCategory,
+  listUnknown, matchTriageRule, type TriageCategory,
 } from "./db";
 import { ensureSeeded, classify, modelTrusted, type JevClass } from "./jev";
 
 export interface Classification { category: TriageCategory; reason: string }
+
+export interface Classified extends Classification {
+  confidence: number;
+  source: "userrule" | "model" | "rules";
+  evidence: string;
+}
 
 const RECEIPT_RE = /\b(receipt|order confirmation|your invoice|payment (received|confirmed)|has shipped|tracking number|your order|booking confirmation)\b/i;
 const UNSUB_RE = /unsubscribe|list-unsubscribe|opt out|email preferences|manage subscription/i;
@@ -32,31 +38,86 @@ const startOfDay = (ms: number) => { const d = new Date(ms); d.setHours(0, 0, 0,
 export const daysBetween = (aMs: number, bMs: number) =>
   Math.round((startOfDay(bMs) - startOfDay(aMs)) / DAY);
 
-export interface AgentReport { triaged: number; nudges: number; pruned: number }
+export interface AgentReport { triaged: number; reorganized: number; nudges: number; pruned: number }
 
 /**
- * One agent pass: triage untriaged inbound email, then (re)compute nudges.
- * Idempotent — rerunning changes nothing unless the underlying state changed.
+ * One classification with precedence: user rule > learned model > deterministic
+ * rules. Pure — every decision is explainable.
+ */
+export function classifyWithRules(m: { from: string; subject: string; body: string }): Classified {
+  const rule = matchTriageRule(m.from || "");
+  if (rule) return {
+    category: rule.category,
+    reason: rule.scope === "sender"
+      ? `your rule: always ${rule.category} from ${rule.pattern}`
+      : `your rule: always ${rule.category} from @${rule.pattern}`,
+    confidence: 1, source: "userrule", evidence: "",
+  };
+  const input = { from: m.from, subject: m.subject, body: m.body };
+  if (modelTrusted(input)) {
+    const j = classify(input);
+    return {
+      category: j.label as TriageCategory,
+      reason: `model ${(j.confidence * 100).toFixed(0)}% — ${j.evidence.slice(0, 3).map((e) => `${e.feature} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}`,
+      confidence: j.confidence, source: "model", evidence: JSON.stringify(j.evidence.slice(0, 6)),
+    };
+  }
+  const c = classifyEmail(m);
+  return { category: c.category, reason: c.reason, confidence: 0, source: "rules", evidence: "" };
+}
+
+/**
+ * Re-apply the current rules/model to every already-triaged mail whose label
+ * is not user-locked (source 'user' = an explicit correction, ground truth).
+ * Idempotent — only rows whose category actually changes are rewritten.
+ */
+export function reorganizePass(): { reorganized: number } {
+  ensureSeeded();
+  let reorganized = 0;
+  const d = getDb();
+  const apply = (id: string, mirrorTo: string | undefined, from: string, subject: string, body: string, cur: string | null, src: string | null) => {
+    if (src === "user") return; // explicit corrections are never overwritten
+    const c = classifyWithRules({ from, subject, body });
+    if (cur && cur === c.category) return;
+    setTriage(id, c.category, c.reason, c.confidence, c.source, c.evidence);
+    if (mirrorTo) setTriage(mirrorTo, c.category, c.reason, c.confidence, c.source, c.evidence);
+    reorganized++;
+  };
+  type Row = { id: string; from_email: string; subject: string; body: string; message_id: string; cur: string | null; src: string | null };
+  const inboxRows = d.query(`
+    SELECT i.id, i.from_email, i.subject, i.body, i.message_id, t.category AS cur, t.source AS src
+    FROM inbox i LEFT JOIN triage t ON t.message_id = i.id
+  `).all() as Row[];
+  for (const r of inboxRows) apply(r.id, r.message_id || undefined, r.from_email, r.subject, r.body, r.cur, r.src);
+  const msgRows = d.query(`
+    SELECT m.id, ct.email AS from_email, m.subject, m.body, t.category AS cur, t.source AS src
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN contacts ct ON ct.id = c.contact_id
+    LEFT JOIN triage t ON t.message_id = m.id
+    WHERE m.channel = 'email' AND m.direction = 'in'
+      AND NOT EXISTS (SELECT 1 FROM inbox i WHERE i.message_id = m.id)
+  `).all() as Row[];
+  for (const r of msgRows) apply(r.id, undefined, r.from_email, r.subject, r.body, r.cur, r.src);
+  return { reorganized };
+}
+
+/**
+ * One agent pass: triage new inbound email, reorganize existing labels under
+ * the current rules, then (re)compute nudges. Idempotent.
  */
 export function runAgent(nowMs = Date.now()): AgentReport {
   ensureSeeded();
   let triaged = 0;
-  const triageOne = (id: string, from: string, subject: string, body: string, mirrorTo?: string) => {
-    const input = { from, subject, body };
-    if (modelTrusted(input)) {
-      const j = classify(input);
-      const reason = `model ${(j.confidence * 100).toFixed(0)}% — ${j.evidence.slice(0, 3).map((e) => `${e.feature} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}`;
-      setTriage(id, j.label as TriageCategory, reason, j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6)));
-      if (mirrorTo) setTriage(mirrorTo, j.label as TriageCategory, reason, j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6)));
-    } else {
-      const c = classifyEmail({ from, subject, body });
-      setTriage(id, c.category, c.reason, 0, "rules", "");
-      if (mirrorTo) setTriage(mirrorTo, c.category, c.reason, 0, "rules", "");
-    }
+  const triageNew = (id: string, from: string, subject: string, body: string, mirrorTo?: string) => {
+    const c = classifyWithRules({ from, subject, body });
+    setTriage(id, c.category, c.reason, c.confidence, c.source, c.evidence);
+    if (mirrorTo) setTriage(mirrorTo, c.category, c.reason, c.confidence, c.source, c.evidence);
     triaged++;
   };
-  for (const m of untriagedEmail()) triageOne(m.id, m.from_email, m.subject, m.body);
-  for (const i of untriagedInbox()) triageOne(i.id, i.from_email, i.subject, i.body, i.message_id || undefined);
+  for (const m of untriagedEmail()) triageNew(m.id, m.from_email, m.subject, m.body);
+  for (const i of untriagedInbox()) triageNew(i.id, i.from_email, i.subject, i.body, i.message_id || undefined);
+  const { reorganized } = reorganizePass();
 
   const d = getDb();
   const valid = new Set<string>();
@@ -114,5 +175,5 @@ export function runAgent(nowMs = Date.now()): AgentReport {
 
   const pruned = pruneNudges(valid);
   const nudges = listActiveNudges(nowMs).length;
-  return { triaged, nudges, pruned };
+  return { triaged, reorganized, nudges, pruned };
 }

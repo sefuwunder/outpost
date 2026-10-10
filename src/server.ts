@@ -241,22 +241,46 @@ Bun.serve({
         const messageId = url.searchParams.get("messageId") || "";
         const t = getTriageFull(messageId);
         if (!t) return bad("not found", 404);
-        return json({ ...t, evidence: t.evidence ? JSON.parse(t.evidence) : [] });
+        const fromEmail =
+          (getDb().query("SELECT from_email FROM inbox WHERE id = ?").get(messageId) as any)?.from_email ||
+          (getDb().query("SELECT ct.email FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?").get(messageId) as any)?.email || "";
+        return json({ ...t, from_email: fromEmail, evidence: t.evidence ? JSON.parse(t.evidence) : [] });
       }
       m = p.match(/^\/api\/triage\/([\w-]+)\/correct$/);
       if (m && req.method === "POST") {
-        const b = await req.json().catch(() => ({})) as { category?: string };
+        const b = await req.json().catch(() => ({})) as { category?: string; scope?: string };
         if (!["personal", "newsletter", "receipt", "automated"].includes(b.category || "")) return bad("bad category");
         const { learn } = await import("./jev");
+        const { reorganizePass } = await import("./agent");
+        const { upsertTriageRule } = await import("./db");
         const msg = getDb().query(`
           SELECT m.subject, m.body, ct.email FROM messages m
           JOIN conversations c ON c.id = m.conversation_id
           JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?`).get(m[1]) as any
           || getDb().query("SELECT subject, body, from_email AS email FROM inbox WHERE id = ?").get(m[1]) as any;
         if (!msg) return bad("not found", 404);
-        learn(b.category as any, { from: msg.email || "", subject: msg.subject || "", body: msg.body || "" });
+        const scope = b.scope === "sender" ? "sender" : "one";
+        const sender = (msg.email || "").toLowerCase().trim();
+        if (scope === "sender" && sender.includes("@")) upsertTriageRule("sender", sender, b.category as any);
+        learn(b.category as any, { from: sender, subject: msg.subject || "", body: msg.body || "" });
         mirrorTriage(m[1], b.category as any, "corrected by you — model updated", 1, "user", "");
-        return json({ ok: true });
+        const { reorganized } = reorganizePass();
+        return json({ ok: true, rule: scope === "sender" ? sender : null, reorganized });
+      }
+      if (p === "/api/triage/rules" && req.method === "GET") {
+        const { listTriageRules } = await import("./db");
+        return json({ rules: listTriageRules() });
+      }
+      m = p.match(/^\/api\/triage\/rules\/([\w-]+)$/);
+      if (m && req.method === "DELETE") {
+        const { deleteTriageRule, listTriageRules } = await import("./db");
+        deleteTriageRule(m[1]);
+        return json({ ok: true, rules: listTriageRules() });
+      }
+      if (p === "/api/inbox/reorganize" && req.method === "POST") {
+        const { reorganizePass } = await import("./agent");
+        const { reorganized } = reorganizePass();
+        return json({ ok: true, reorganized });
       }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/snooze$/);
       if (m && req.method === "POST") {

@@ -10,7 +10,7 @@ const agent = await import("../src/agent.ts");
 
 beforeEach(() => {
   db.openDb(join(process.env.OUTPOST_DATA!, "t.db"));
-  db.getDb().exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings; DELETE FROM triage; DELETE FROM nudges;");
+  db.getDb().exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings; DELETE FROM triage; DELETE FROM nudges; DELETE FROM triage_rules; DELETE FROM inbox;");
 });
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86400_000).toISOString();
@@ -86,4 +86,59 @@ test("daysBetween uses calendar days", () => {
   const a = new Date(2026, 9, 9, 23, 59).getTime();
   const b = new Date(2026, 9, 10, 0, 1).getTime();
   expect(agent.daysBetween(a, b)).toBe(1); // 2 minutes, next day
+});
+
+test("triage rules: sender beats domain, case-insensitive, deletable", () => {
+  db.upsertTriageRule("domain", "Shop.COM", "newsletter");
+  db.upsertTriageRule("sender", "boss@shop.com", "personal");
+  expect(db.matchTriageRule("deals@shop.com")?.category).toBe("newsletter");
+  expect(db.matchTriageRule("BOSS@SHOP.COM")?.category).toBe("personal"); // sender beats domain
+  expect(db.matchTriageRule("other@x.com")).toBeNull();
+  const rules = db.listTriageRules();
+  expect(rules.length).toBe(2);
+  db.deleteTriageRule(rules[0].id);
+  expect(db.listTriageRules().length).toBe(1);
+  // re-upsert replaces the category
+  db.upsertTriageRule("domain", "shop.com", "receipt");
+  expect(db.matchTriageRule("deals@shop.com")?.category).toBe("receipt");
+});
+
+test("user rule overrides deterministic rules for new mail", () => {
+  db.upsertTriageRule("sender", "deals@shop.com", "personal");
+  const c = db.createContact({ name: "Shop", email: "deals@shop.com" });
+  const conv = db.conversationFor(c.id);
+  db.addMessage({ conversation_id: conv.id, channel: "email", direction: "in", body: "unsubscribe anytime", subject: "Big sale" });
+  const r = agent.runAgent();
+  expect(r.triaged).toBe(1);
+  const m = db.listMessages(conv.id)[0];
+  expect(db.getTriage(m.id)).toBe("personal");
+  expect(db.getTriageFull(m.id)?.source).toBe("userrule");
+});
+
+test("reorganizePass moves rule-matched mail, keeps user corrections, is idempotent", () => {
+  const c = db.createContact({ name: "Shop", email: "deals@shop.com" });
+  const conv = db.conversationFor(c.id);
+  const m1 = db.addMessage({ conversation_id: conv.id, channel: "email", direction: "in", body: "unsubscribe", subject: "Sale 1" })!;
+  const m2 = db.addMessage({ conversation_id: conv.id, channel: "email", direction: "in", body: "unsubscribe", subject: "Sale 2" })!;
+  agent.runAgent();
+  expect(db.getTriage(m1.id)).toBe("newsletter");
+  // user explicitly corrects m2 → personal (locked)
+  db.mirrorTriage(m2.id, "personal", "corrected by you", 1, "user", "");
+  // training: always personal from this sender
+  db.upsertTriageRule("sender", "deals@shop.com", "personal");
+  const r = agent.reorganizePass();
+  expect(r.reorganized).toBe(1); // m1 moved; m2 untouched (user-locked)
+  expect(db.getTriage(m1.id)).toBe("personal");
+  expect(db.getTriage(m2.id)).toBe("personal");
+  expect(agent.reorganizePass().reorganized).toBe(0); // idempotent
+});
+
+test("reorganizePass re-labels inbox rows not mirrored to messages", () => {
+  const id = db.upsertInbox({ from_email: "deals@shop.com", from_name: "Shop", subject: "Sale", body: "unsubscribe here", at: new Date().toISOString() });
+  agent.runAgent();
+  expect(db.getTriage(id)).toBe("newsletter");
+  db.upsertTriageRule("domain", "shop.com", "automated");
+  const r = agent.reorganizePass();
+  expect(r.reorganized).toBe(1);
+  expect(db.getTriage(id)).toBe("automated");
 });

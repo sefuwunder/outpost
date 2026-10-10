@@ -10,7 +10,7 @@ const agent = await import("../src/agent.ts");
 
 beforeEach(() => {
   db.openDb(join(process.env.OUTPOST_DATA!, "t.db"));
-  db.getDb().exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings; DELETE FROM triage; DELETE FROM nudges; DELETE FROM inbox;");
+  db.getDb().exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings; DELETE FROM triage; DELETE FROM nudges; DELETE FROM triage_rules; DELETE FROM inbox;");
 });
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86400_000).toISOString();

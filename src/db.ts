@@ -96,6 +96,12 @@ export function openDb(path?: string): Database {
       external_id TEXT UNIQUE, contact_id TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
       read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
+    -- user training rules: explicit sender/domain → category overrides
+    CREATE TABLE IF NOT EXISTS triage_rules (
+      id TEXT PRIMARY KEY, scope TEXT NOT NULL, pattern TEXT NOT NULL,
+      category TEXT NOT NULL, created_at TEXT NOT NULL,
+      UNIQUE(scope, pattern)
+    );
   `);
   // Migration: triage confidence/source/evidence (older DBs lack the columns).
   const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
@@ -406,8 +412,48 @@ export function getTriage(messageId: string): TriageCategory | null {
 export function getTriageFull(messageId: string): { category: string; reason: string; confidence: number; source: string; evidence: string } | null {
   return (getDb().query("SELECT category, reason, confidence, source, evidence FROM triage WHERE message_id = ?").get(messageId) as any) || null;
 }
-export function untriagedEmail(limit = 200): Array<{ id: string; from_email: string; subject: string; body: string }> {
-  return getDb().query(`
+
+// ---------- triage rules: user-trained sender/domain overrides ----------
+
+export interface TriageRule {
+  id: string; scope: "sender" | "domain"; pattern: string;
+  category: TriageCategory; created_at: string;
+}
+
+/** Create or replace a rule. Patterns are lowercased; domains must be bare (no @). */
+export function upsertTriageRule(scope: "sender" | "domain", pattern: string, category: TriageCategory): TriageRule {
+  const p = (pattern || "").toLowerCase().trim().replace(/^@/, "");
+  if (!p) throw new Error("rule pattern is required");
+  const id = `trl_${scope}_${p.replace(/[^a-z0-9.]/g, "_")}`;
+  getDb().query(
+    "INSERT INTO triage_rules(id, scope, pattern, category, created_at) VALUES(?,?,?,?,?) ON CONFLICT(scope, pattern) DO UPDATE SET category = excluded.category"
+  ).run(id, scope, p, category, nowIso());
+  return { id, scope, pattern: p, category, created_at: nowIso() };
+}
+
+/** Sender-exact match first, then domain. Null when no rule applies. */
+export function matchTriageRule(email: string): TriageRule | null {
+  const e = (email || "").toLowerCase().trim();
+  if (!e) return null;
+  const d = getDb();
+  const sender = d.query("SELECT * FROM triage_rules WHERE scope = 'sender' AND pattern = ?").get(e) as TriageRule | null;
+  if (sender) return sender;
+  const domain = e.split("@")[1];
+  if (domain) {
+    const hit = d.query("SELECT * FROM triage_rules WHERE scope = 'domain' AND pattern = ?").get(domain) as TriageRule | null;
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function listTriageRules(): TriageRule[] {
+  return getDb().query("SELECT * FROM triage_rules ORDER BY created_at DESC").all() as TriageRule[];
+}
+
+export function deleteTriageRule(id: string): void {
+  getDb().query("DELETE FROM triage_rules WHERE id = ?").run(id);
+}
+export function untriagedEmail(limit = 200): Array<{ id: string; from_email: string; subject: string; body: string }> {  return getDb().query(`
     SELECT m.id, ct.email AS from_email, m.subject, m.body
     FROM messages m
     JOIN conversations c ON c.id = m.conversation_id

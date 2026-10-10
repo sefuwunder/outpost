@@ -71,6 +71,13 @@ something specific.
   too — per-kind acted/dismissed rates plus an urgency ramp rank the 🔔 list,
   so nudge types you always dismiss sink over time. All counts live in SQLite;
   nothing leaves the machine.
+- **Training the agent** — tap a category pill on any email to re-label it,
+  then choose "Just this email" or "All mail from sender@x.com" to create a
+  persistent sender rule (domain rules are supported too). Corrections feed
+  the model *and* create rules; refreshing the inbox re-runs the agent over
+  everything — previously-labeled mail moves under the new rules, while your
+  explicit corrections stay locked as ground truth. Rules are listed (and
+  deletable) in ⚙️ Channels → Triage rules.
 - **Inbound poll** — IMAP UNSEEN sweep + Google Voice SMS harvest + Matrix
   `/sync` every 60s (best-effort per channel; a dead channel never sinks the
   sweep), plus a manual ⟳ button. Dedupe by external message id. The agent
@@ -99,5 +106,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 48 tests — imap backfill, inbox, jev model, agent rules, smtp, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 52 tests — imap backfill, inbox, jev model, agent rules + training rules + reorganize, smtp, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```

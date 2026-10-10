@@ -239,6 +239,7 @@ function pollSummary(rep) {
   }
   if (rep.backfilled?.error) parts.push("import failed: " + rep.backfilled.error);
   if (rep.triaged) parts.push(rep.triaged + " organized");
+  if (rep.reorganized) parts.push(rep.reorganized + " relabeled");
   return parts.length ? parts.join(" · ") : "No new mail.";
 }
 
@@ -251,19 +252,32 @@ $("sheet-wrap").addEventListener("click", (e) => { if (e.target === $("sheet-wra
 
 async function openTriageSheet(messageId, current) {
   const t = await api("/api/triage/explain?messageId=" + encodeURIComponent(messageId));
-  $("sheet-title").textContent = `Labeled "${t.category}" · ${t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : "rules"}`;
+  const srcName = t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : t.source === "userrule" ? "your rule" : "rules";
+  $("sheet-title").textContent = `Labeled "${t.category}" · ${srcName}`;
   const why = t.source === "model" && t.evidence.length
     ? `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">Because: ${t.evidence.slice(0, 3).map((e) => `${esc(e.feature)} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}</div>`
     : `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">${esc(t.reason)}</div>`;
   $("sheet-body").innerHTML = why + TRIAGE_CATS.map((c) =>
     `<button class="sheet-btn${c === current ? " on" : ""}" data-cat="${c}">${c[0].toUpperCase() + c.slice(1)}${c === current ? " ✓" : ""}</button>`).join("");
   $("sheet-body").querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
-    if (b.dataset.cat !== current) {
-      await api(`/api/triage/${messageId}/correct`, { method: "POST", body: JSON.stringify({ category: b.dataset.cat }) });
+    if (b.dataset.cat === current) { closeSheet(); return; }
+    // step 2: scope — this email only, or a standing rule for the sender?
+    const cat = b.dataset.cat;
+    const sender = t.from_email || "";
+    $("sheet-title").textContent = `Label as "${cat}"`;
+    $("sheet-body").innerHTML =
+      `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">Apply to:</div>` +
+      `<button class="sheet-btn" data-scope="one">Just this email</button>` +
+      (sender.includes("@") ? `<button class="sheet-btn" data-scope="sender">All mail from ${esc(sender)}</button>` : "");
+    $("sheet-body").querySelectorAll("button").forEach((s) => s.addEventListener("click", async () => {
+      const r = await api(`/api/triage/${messageId}/correct`, { method: "POST", body: JSON.stringify({ category: cat, scope: s.dataset.scope }) });
+      closeSheet();
       await refresh();
       if (state.view === "email" && state.email?.id === messageId) openEmail(messageId); // re-render reader
-    }
-    closeSheet();
+      toast(r.reorganized
+        ? `Inbox reorganized — ${r.reorganized} email${r.reorganized === 1 ? "" : "s"} moved.`
+        : r.rule ? `Rule saved: all mail from ${r.rule} → ${cat}.` : "Label updated.");
+    }));
   }));
   $("sheet-wrap").hidden = false;
 }
@@ -515,8 +529,27 @@ $("btn-settings").addEventListener("click", async () => {
     el.textContent = v ? "on" : "off";
     el.className = "cfgdot" + (v ? " yes" : "");
   }
+  renderRulesList();
   show("settings");
 });
+
+async function renderRulesList() {
+  const box = $("rules-list");
+  try {
+    const { rules } = await api("/api/triage/rules");
+    if (!rules.length) {
+      box.innerHTML = `<div style="padding:11px 0;font-size:15px;color:var(--muted)">No rules yet — correct a label to teach the agent.</div>`;
+      return;
+    }
+    box.innerHTML = rules.map((r) =>
+      `<div class="testrow"><span>All mail from <b>${esc(r.scope === "domain" ? "@" + r.pattern : r.pattern)}</b> → ${esc(r.category)}</span><button data-rule="${esc(r.id)}" type="button">Delete</button></div>`).join("");
+    box.querySelectorAll("[data-rule]").forEach((b) => b.addEventListener("click", async () => {
+      await api("/api/triage/rules/" + encodeURIComponent(b.dataset.rule), { method: "DELETE" });
+      renderRulesList();
+      toast("Rule deleted.");
+    }));
+  } catch { box.innerHTML = `<div style="padding:11px 0;font-size:15px;color:var(--muted)">Couldn't load rules.</div>`; }
+}
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
