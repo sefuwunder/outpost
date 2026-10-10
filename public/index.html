@@ -3,92 +3,113 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>outpost — the outer ring</title>
+<meta name="color-scheme" content="light dark">
+<title>Outpost</title>
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 </head>
 <body>
-<header id="topbar">
-  <div class="brand"><span class="glyph">📡</span><div><h1>outpost</h1><p>the outer ring · beyond the 8</p></div></div>
-  <div class="top-actions">
-    <span id="unread-pill" class="unread-pill" hidden></span>
-    <button id="btn-poll" title="Check for new messages">⟳</button>
-    <button id="btn-contacts" title="Contacts">👥</button>
-    <button id="btn-settings" title="Settings">⚙️</button>
+<header id="topbar" class="navbar">
+  <div class="row">
+    <button id="btn-poll" class="navbtn icon" title="Check for new messages">⟳</button>
+    <div class="navtitle"><h1></h1></div>
+    <button id="btn-contacts" class="navbtn icon" title="Contacts">👥</button>
+    <button id="btn-settings" class="navbtn icon" title="Settings">⚙️</button>
   </div>
+  <div class="bigtitle"><h1>Outpost</h1></div>
 </header>
 
 <main id="view-list" class="view">
-  <div class="searchrow"><input id="search" type="search" placeholder="Search conversations…" autocomplete="off"></div>
-  <div id="unknown-strip" hidden></div>
-  <div id="conv-list"></div>
+  <div class="narrow">
+    <div class="searchrow"><input id="search" type="search" placeholder="Search" autocomplete="off"></div>
+    <div id="unknown-strip" hidden></div>
+    <div id="conv-list"></div>
+  </div>
   <button id="btn-new-contact" class="fab" title="New contact">＋</button>
 </main>
 
 <main id="view-thread" class="view" hidden>
-  <div id="thread-head">
-    <button id="btn-back">‹</button>
-    <div><h2 id="thread-name"></h2><p id="thread-sub"></p></div>
-    <button id="btn-edit-contact" title="Edit contact">✎</button>
+  <div id="thread-head" class="navbar" style="padding-top: env(safe-area-inset-top)">
+    <div class="row">
+      <button id="btn-back" class="navbtn">‹ <span id="back-label">Outpost</span></button>
+      <div class="navtitle" id="thread-title">
+        <div class="avatar" id="thread-avatar"></div>
+        <h1 id="thread-name"></h1>
+      </div>
+      <div style="min-width:64px"></div>
+    </div>
   </div>
-  <div id="messages"></div>
-  <div id="composer">
-    <div id="chan-tabs"></div>
-    <div class="compose-row">
-      <textarea id="compose-text" rows="1" placeholder="Message…"></textarea>
-      <button id="btn-send">➤</button>
+  <div class="narrow" style="display:flex;flex-direction:column;flex:1;min-height:0">
+    <div id="messages"></div>
+    <div id="composer">
+      <div id="chan-tabs" class="seg" hidden></div>
+      <div class="compose-row">
+        <textarea id="compose-text" rows="1" placeholder="iMessage"></textarea>
+        <button id="btn-send" hidden title="Send">↑</button>
+      </div>
     </div>
   </div>
 </main>
 
-<main id="view-form" class="view" hidden>
-  <div class="formhead"><button id="btn-form-back">‹</button><h2 id="form-title">New contact</h2></div>
+<main id="view-form" class="view grouped" hidden>
+  <div class="navbar formhead" style="padding-top: env(safe-area-inset-top)">
+    <div class="row">
+      <button id="btn-form-back" class="navbtn">‹ Outpost</button>
+      <div class="navtitle"><h1 id="form-title">New Contact</h1></div>
+      <div style="min-width:64px"></div>
+    </div>
+  </div>
   <form id="contact-form">
-    <label>Name<input id="f-name" required maxlength="80"></label>
-    <label>Email<input id="f-email" type="email" maxlength="120" placeholder="them@example.com"></label>
-    <label>Phone<input id="f-phone" type="tel" maxlength="30" placeholder="+1 555 000 1234"></label>
-    <label>Matrix ID<input id="f-matrix" maxlength="120" placeholder="@them:matrix.org"></label>
-    <label>Matrix room ID<input id="f-room" maxlength="200" placeholder="!room:matrix.org"></label>
-    <label>Notes<textarea id="f-notes" rows="3" maxlength="2000"></textarea></label>
-    <button class="primary" type="submit">Save contact</button>
-    <button class="ghost danger" type="button" id="btn-archive" hidden>Archive contact</button>
+    <fieldset class="card">
+      <label><span class="lab">Name</span><input id="f-name" required maxlength="80" placeholder="Jane Appleseed"></label>
+      <label><span class="lab">Email</span><input id="f-email" type="email" maxlength="120" placeholder="jane@example.com"></label>
+      <label><span class="lab">Phone</span><input id="f-phone" type="tel" maxlength="30" placeholder="+1 555 000 1234"></label>
+    </fieldset>
+    <fieldset class="card">
+      <label><span class="lab">Matrix ID</span><input id="f-matrix" maxlength="120" placeholder="@jane:matrix.org"></label>
+      <label><span class="lab">Matrix room ID</span><input id="f-room" maxlength="200" placeholder="!room:matrix.org"></label>
+      <label><span class="lab">Notes</span><textarea id="f-notes" rows="2" maxlength="2000"></textarea></label>
+    </fieldset>
+    <div class="formbtns">
+      <button class="primary" type="submit">Save</button>
+      <button class="destruct" type="button" id="btn-archive" hidden>Archive Contact</button>
+    </div>
   </form>
 </main>
 
-<main id="view-settings" class="view" hidden>
-  <div class="formhead"><button id="btn-settings-back">‹</button><h2>Channels</h2></div>
-  <div class="settings">
-    <section>
-      <h3>✉️ Email <span class="cfg" id="cfg-email"></span></h3>
-      <p class="note">IMAP inbox for receiving, SMTP for sending.</p>
-      <div class="grid2">
-        <label>IMAP host<input id="s-imap_host" placeholder="imap.example.com"></label>
-        <label>IMAP port<input id="s-imap_port" inputmode="numeric" placeholder="993"></label>
-        <label>IMAP user<input id="s-imap_user" autocomplete="username"></label>
-        <label>IMAP password<input id="s-imap_pass" type="password" autocomplete="current-password"></label>
-        <label>SMTP host<input id="s-smtp_host" placeholder="smtp.example.com"></label>
-        <label>SMTP port<input id="s-smtp_port" inputmode="numeric" placeholder="587"></label>
-        <label>SMTP user<input id="s-smtp_user"></label>
-        <label>SMTP password<input id="s-smtp_pass" type="password"></label>
-        <label>From address<input id="s-smtp_from" placeholder="you@example.com"></label>
-      </div>
-      <button class="ghost" data-test="email">Test email</button> <span class="testout" id="tout-email"></span>
-    </section>
-    <section>
-      <h3>💬 SMS <span class="cfg" id="cfg-sms"></span></h3>
-      <p class="note">Sends via your SMTP through Google Voice gateways; replies arrive as email forwards and are matched by number.</p>
-      <button class="ghost" data-test="sms">Test SMS path</button> <span class="testout" id="tout-sms"></span>
-    </section>
-    <section>
-      <h3>🟣 Matrix <span class="cfg" id="cfg-matrix"></span></h3>
-      <div class="grid2">
-        <label>Homeserver<input id="s-matrix_homeserver" placeholder="https://matrix.org"></label>
-        <label>Access token<input id="s-matrix_token" type="password"></label>
-      </div>
-      <button class="ghost" data-test="matrix">Test Matrix</button> <span class="testout" id="tout-matrix"></span>
-    </section>
-    <button class="primary" id="btn-save-settings">Save channels</button>
+<main id="view-settings" class="view grouped" hidden>
+  <div class="navbar" style="padding-top: env(safe-area-inset-top)">
+    <div class="row">
+      <button id="btn-settings-back" class="navbtn">‹ Outpost</button>
+      <div class="navtitle"><h1>Channels</h1></div>
+      <div style="min-width:64px"></div>
+    </div>
   </div>
+  <div class="secttl">Email · <span class="cfgdot" id="cfg-email">off</span></div>
+  <fieldset class="card">
+    <label><span class="lab">IMAP host</span><input id="s-imap_host" placeholder="imap.example.com"></label>
+    <label><span class="lab">IMAP port</span><input id="s-imap_port" inputmode="numeric" placeholder="993"></label>
+    <label><span class="lab">IMAP user</span><input id="s-imap_user" autocomplete="username"></label>
+    <label><span class="lab">IMAP password</span><input id="s-imap_pass" type="password" autocomplete="current-password"></label>
+    <label><span class="lab">SMTP host</span><input id="s-smtp_host" placeholder="smtp.example.com"></label>
+    <label><span class="lab">SMTP port</span><input id="s-smtp_port" inputmode="numeric" placeholder="587"></label>
+    <label><span class="lab">SMTP user</span><input id="s-smtp_user"></label>
+    <label><span class="lab">SMTP password</span><input id="s-smtp_pass" type="password"></label>
+    <label><span class="lab">From address</span><input id="s-smtp_from" placeholder="you@example.com"></label>
+    <div class="testrow"><span>Connection</span><span class="testout" id="tout-email"></span><button data-test="email" type="button">Test</button></div>
+  </fieldset>
+  <div class="secttl">SMS · <span class="cfgdot" id="cfg-sms">off</span></div>
+  <fieldset class="card">
+    <div class="testrow"><span>SMS path</span><span class="testout" id="tout-sms"></span><button data-test="sms" type="button">Test</button></div>
+  </fieldset>
+  <p class="sectnote">SMS sends through your SMTP via Google Voice gateways; replies arrive as email forwards and are matched by number.</p>
+  <div class="secttl">Matrix · <span class="cfgdot" id="cfg-matrix">off</span></div>
+  <fieldset class="card">
+    <label><span class="lab">Homeserver</span><input id="s-matrix_homeserver" placeholder="https://matrix.org"></label>
+    <label><span class="lab">Access token</span><input id="s-matrix_token" type="password"></label>
+    <div class="testrow"><span>Connection</span><span class="testout" id="tout-matrix"></span><button data-test="matrix" type="button">Test</button></div>
+  </fieldset>
+  <div class="formbtns"><button class="primary" id="btn-save-settings" type="button">Save</button></div>
 </main>
 
 <script src="/app.js"></script>
