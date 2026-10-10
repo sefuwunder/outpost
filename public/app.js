@@ -17,7 +17,7 @@ const CHIPS = [
   { id: "receipt", label: "Receipts" },
   { id: "automated", label: "Automated" },
 ];
-const state = { view: "list", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [] };
+const state = { view: "list", tab: "inbox", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [], inbox: null, email: null, secCollapsed: { newsletter: true, receipt: true, automated: true } };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const initials = (n) => n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?";
@@ -40,7 +40,7 @@ const sameDay = (a, b) => fmtDay(a) === fmtDay(b);
 
 function show(view) {
   state.view = view;
-  for (const v of ["list", "thread", "form", "settings", "nudges"]) $("view-" + v).hidden = v !== view;
+  for (const v of ["list", "thread", "form", "settings", "nudges", "email"]) $("view-" + v).hidden = v !== view;
   $("topbar").style.display = view === "list" ? "" : "none";
 }
 
@@ -199,11 +199,14 @@ async function sendMessage() {
   finally { $("btn-send").disabled = false; }
 }
 
-$("btn-back").addEventListener("click", () => { state.thread = null; show("list"); loadConversations(); });
+$("btn-back").addEventListener("click", () => { state.thread = null; show("list"); refresh(); });
 $("thread-title").addEventListener("click", () => {
   if (state.thread) openContactForm(state.thread.contact);
 });
-$("search").addEventListener("input", (e) => { state.q = e.target.value; renderList(); });
+$("search").addEventListener("input", (e) => {
+  state.q = e.target.value;
+  if (state.tab === "inbox") renderInbox(); else renderList();
+});
 $("btn-poll").addEventListener("click", async () => {
   const b = $("btn-poll");
   b.style.transform = "rotate(180deg)";
@@ -230,13 +233,121 @@ async function openTriageSheet(messageId, current) {
     if (b.dataset.cat !== current) {
       await api(`/api/triage/${messageId}/correct`, { method: "POST", body: JSON.stringify({ category: b.dataset.cat }) });
       await refresh();
+      if (state.view === "email" && state.email?.id === messageId) openEmail(messageId); // re-render reader
     }
     closeSheet();
   }));
   $("sheet-wrap").hidden = false;
 }
 
-// ---------- nudges ----------
+// ---------- inbox: 30 days of email, organized by the agent ----------
+const SECTIONS = [
+  { id: "personal", label: "Personal" },
+  { id: "newsletter", label: "Newsletters" },
+  { id: "receipt", label: "Receipts" },
+  { id: "automated", label: "Automated" },
+];
+
+function setTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll("#main-seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $("inbox-pane").hidden = tab !== "inbox";
+  $("chats-pane").hidden = tab !== "chats";
+  $("btn-new-contact").style.display = tab === "chats" ? "" : "none";
+  if (tab === "inbox") loadInbox(); else loadConversations();
+}
+document.querySelectorAll("#main-seg button").forEach((b) =>
+  b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+async function loadInbox() {
+  const { sections } = await api("/api/inbox");
+  state.inbox = sections;
+  renderInbox();
+}
+
+function senderName(r) {
+  return r.from_name || r.from_email;
+}
+
+function renderInbox() {
+  const q = state.q.trim().toLowerCase();
+  const list = $("inbox-list");
+  const match = (r) => !q || (r.from_email || "").toLowerCase().includes(q) ||
+    (r.from_name || "").toLowerCase().includes(q) ||
+    (r.subject || "").toLowerCase().includes(q) || (r.body || "").toLowerCase().includes(q);
+  const html = SECTIONS.map((s) => {
+    const rows = (state.inbox?.[s.id] || []).filter(match);
+    if (!rows.length) return "";
+    const unread = rows.filter((r) => !r.read).length;
+    const collapsed = state.secCollapsed[s.id];
+    const body = collapsed ? "" : rows.map((r) => `
+      <div class="mailrow${r.read ? "" : " unread"}" data-id="${r.id}">
+        <div class="dot"><i></i></div>
+        <div class="meta">
+          <div class="row1"><h3>${esc(senderName(r))}</h3><time>${fmtTime(r.at)}</time></div>
+          <div class="subj">${esc(r.subject) || "<i>(no subject)</i>"}</div>
+          <p class="snip">${esc((r.body || "").slice(0, 160))}</p>
+        </div>
+      </div>`).join("");
+    return `<div class="inbox-sec">
+      <button class="inbox-sec-h" data-sec="${s.id}">${s.label} <span class="count">· ${rows.length}${unread ? ` · ${unread} new` : ""}</span><span class="chev">${collapsed ? "›" : "⌄"}</span></button>
+      ${body}</div>`;
+  }).join("");
+  list.innerHTML = html || `<div class="empty">No email in the last 30 days.<br>Connect email in ⚙️ Settings, then tap ⟳.</div>`;
+  list.querySelectorAll(".inbox-sec-h").forEach((b) => b.addEventListener("click", () => {
+    state.secCollapsed[b.dataset.sec] = !state.secCollapsed[b.dataset.sec];
+    renderInbox();
+  }));
+  list.querySelectorAll(".mailrow").forEach((el) =>
+    el.addEventListener("click", () => openEmail(el.dataset.id)));
+}
+
+function openEmail(id) {
+  const all = SECTIONS.flatMap((s) => state.inbox?.[s.id] || []);
+  const r = all.find((x) => x.id === id);
+  if (!r) return;
+  state.email = r;
+  const name = senderName(r);
+  if (!r.read) { api(`/api/inbox/${id}/read`, { method: "POST", body: JSON.stringify({ read: true }) }); r.read = 1; }
+  $("email-body").innerHTML = `
+    <div class="email-subject">${esc(r.subject) || "(no subject)"}</div>
+    <div class="email-from">
+      <div class="avatar" style="${avatarStyle(name)}">${esc(initials(name))}</div>
+      <div class="who"><b>${esc(name)}</b><span>${esc(r.from_email)}</span></div>
+      <button class="chanpill catbtn" id="email-cat">${esc(r.category)}</button>
+      <div class="email-date">${fmtTime(r.at)}</div>
+    </div>
+    <div class="email-text">${esc(r.body)}</div>
+    <div class="email-actions">
+      ${r.contact_id ? `<button id="email-open-chat">Open chat</button>` : `<button id="email-add-contact">Add to Contacts</button>`}
+      <button id="email-toggle-read" class="dim">${r.read ? "Mark unread" : "Mark read"}</button>
+      <button id="email-delete" class="dim">Delete</button>
+    </div>`;
+  $("email-add-contact")?.addEventListener("click", () => {
+    openContactForm(null);
+    $("f-name").value = r.from_name || "";
+    $("f-email").value = r.from_email || "";
+  });
+  $("email-cat").addEventListener("click", () => openTriageSheet(id, r.category));
+  $("email-open-chat")?.addEventListener("click", async () => {
+    const { conversations } = await api("/api/conversations");
+    const conv = conversations.find((c) => c.contact_id === r.contact_id);
+    if (conv) openThread(conv.id);
+  });
+  $("email-toggle-read").addEventListener("click", async () => {
+    await api(`/api/inbox/${id}/read`, { method: "POST", body: JSON.stringify({ read: !!r.read }) });
+    r.read = r.read ? 0 : 1;
+    openEmail(id);
+    loadInbox();
+  });
+  $("email-delete").addEventListener("click", async () => {
+    if (!confirm("Delete this email?")) return;
+    await api(`/api/inbox/${id}`, { method: "DELETE" });
+    show("list"); loadInbox();
+  });
+  show("email");
+}
+$("btn-email-back").addEventListener("click", () => { show("list"); loadInbox(); });
 const KIND_LABEL = { reply_needed: "Reply", follow_up: "Follow up", unknown_waiting: "New sender" };
 
 async function loadNudges() {
@@ -387,11 +498,13 @@ document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("clic
 async function refresh() {
   if (state.view === "contacts") { $("btn-contacts").click(); return; }
   if (state.view === "nudges") { loadNudges(); return; }
-  await loadConversations();
-  await loadUnknown();
+  if (state.view === "email") { loadInbox(); return; }
+  if (state.tab === "inbox") await loadInbox();
+  else { await loadConversations(); await loadUnknown(); }
   await loadNudges();
 }
 setInterval(() => { if (state.view === "list") refresh(); }, 30_000);
 setInterval(() => { if (state.view === "thread" && state.thread) openThread(state.thread.conversation.id); }, 15_000);
 
-refresh();
+setTab("inbox");
+loadNudges();

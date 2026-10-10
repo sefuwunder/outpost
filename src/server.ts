@@ -3,6 +3,7 @@ import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listConversations, conversationFor, listMessages, markRead, totalUnread,
   listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
   listActiveNudges, dismissNudge, snoozeNudge, getTriageFull,
+  listInbox, getInbox, setInboxRead, deleteInbox, inboxUnread, mirrorTriage,
   getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
 
@@ -176,6 +177,22 @@ Bun.serve({
           .sort((a, b) => b.score - a.score);
         return json({ nudges });
       }
+      if (p === "/api/inbox" && req.method === "GET") {
+        const { runAgent } = await import("./agent");
+        runAgent(); // ensure fresh triage before grouping
+        const rows = listInbox();
+        const sections: Record<string, typeof rows> = { personal: [], newsletter: [], receipt: [], automated: [] };
+        for (const r of rows) (sections[r.category] || sections.personal).push(r);
+        return json({ sections, unread: inboxUnread() });
+      }
+      m = p.match(/^\/api\/inbox\/([\w-]+)$/);
+      if (m && req.method === "DELETE") { deleteInbox(m[1]); return json({ ok: true }); }
+      m = p.match(/^\/api\/inbox\/([\w-]+)\/read$/);
+      if (m && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as { read?: boolean };
+        setInboxRead(m[1], b.read !== false);
+        return json({ ok: true });
+      }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/dismiss$/);
       if (m && req.method === "POST") {
         const { recordNudgeFeedback } = await import("./jev");
@@ -205,10 +222,11 @@ Bun.serve({
         const msg = getDb().query(`
           SELECT m.subject, m.body, ct.email FROM messages m
           JOIN conversations c ON c.id = m.conversation_id
-          JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?`).get(m[1]) as any;
+          JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?`).get(m[1]) as any
+          || getDb().query("SELECT subject, body, from_email AS email FROM inbox WHERE id = ?").get(m[1]) as any;
         if (!msg) return bad("not found", 404);
         learn(b.category as any, { from: msg.email || "", subject: msg.subject || "", body: msg.body || "" });
-        setTriage(m[1], b.category as any, "corrected by you — model updated", 1, "user", "");
+        mirrorTriage(m[1], b.category as any, "corrected by you — model updated", 1, "user", "");
         return json({ ok: true });
       }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/snooze$/);

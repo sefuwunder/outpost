@@ -1,8 +1,13 @@
 # outpost 📡
 
-The outer ring — a conversation-view communication app for everyone **outside
+The outer ring — a communication app for everyone **outside
 Relay's inner 8**. No contact caps, no groups: one unified thread per person,
 with every channel condensed into a single conversation.
+
+It opens on a 30-day **Inbox**: every inbound email of the last month,
+organized by the agent into Personal / Newsletters / Receipts / Automated —
+senders don't need to be saved contacts to appear. An Inbox/Chats segmented
+control switches to the unified per-contact threads.
 
 Built on Relay's codebase: the IMAP/SMTP/Matrix transports are shared verbatim.
 
@@ -34,6 +39,13 @@ browser — the settings API only returns booleans and non-secret fields.
   email/phone with an imported/skipped report. A red **Clear All Contacts** button
   at the bottom of the roster wipes every contact, conversation, message, and
   unknown sender (double-confirmed; channel settings are kept).
+- **Inbox home** — every inbound email is captured into an `inbox` table
+  (dedupe by external id), whether or not the sender is a contact; existing
+  messages and unknown senders are backfilled on first run. The home view
+  shows the last 30 days grouped by the agent's triage sections (collapsible,
+  unread counts), with a reader view per email: Open chat / Add to Contacts
+  for unknown senders, read/unread, delete. The category label in the reader
+  is tappable — the same correction sheet that teaches the model.
 - **Agent** — deterministic, rule-based (no AI): every inbound email is
   classified (personal / newsletter / receipt / automated — unsubscribe markers,
   bulk senders, receipt patterns, noreply addresses), and nudges are generated
@@ -80,5 +92,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 36 tests — jev model, agent rules, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 42 tests — inbox, jev model, agent rules, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```

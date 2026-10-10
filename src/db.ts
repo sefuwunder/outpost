@@ -89,11 +89,37 @@ export function openDb(path?: string): Database {
     CREATE TABLE IF NOT EXISTS jev_nudge_fb (
       kind TEXT PRIMARY KEY, acted INTEGER NOT NULL DEFAULT 0, dismissed INTEGER NOT NULL DEFAULT 0
     );
+    -- inbox: every inbound email, contact or not (the 30-day home view)
+    CREATE TABLE IF NOT EXISTS inbox (
+      id TEXT PRIMARY KEY, from_email TEXT NOT NULL DEFAULT '', from_name TEXT NOT NULL DEFAULT '',
+      subject TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', at TEXT NOT NULL,
+      external_id TEXT UNIQUE, contact_id TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
+      read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    );
   `);
   // Migration: triage confidence/source/evidence (older DBs lack the columns).
   const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
   for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
     if (!triCols.some((c) => c.name === col)) db.exec(`ALTER TABLE triage ADD COLUMN ${col} ${def}`);
+  }
+  // Backfill inbox from existing email messages + unknown senders (once).
+  const inbCount = (db.query("SELECT COUNT(*) AS n FROM inbox").get() as { n: number }).n;
+  if (inbCount === 0) {
+    db.exec(`
+      INSERT OR IGNORE INTO inbox(id, from_email, from_name, subject, body, at, external_id, contact_id, message_id, read, created_at)
+      SELECT 'inb_' || m.id, COALESCE(ct.email, ''), COALESCE(ct.name, ''), COALESCE(m.subject, ''), COALESCE(m.body, ''),
+        m.created_at, CASE WHEN COALESCE(m.external_id, '') = '' THEN NULL ELSE m.external_id END,
+        c.contact_id, m.id, COALESCE(m.read, 0), m.created_at
+      FROM messages m JOIN conversations c ON c.id = m.conversation_id
+      LEFT JOIN contacts ct ON ct.id = c.contact_id
+      WHERE m.channel = 'email';
+    `);
+    db.exec(`
+      INSERT OR IGNORE INTO inbox(id, from_email, from_name, subject, body, at, external_id, contact_id, message_id, read, created_at)
+      SELECT 'inb_unk_' || u.id, u.handle, COALESCE(u.name, ''), '', COALESCE(u.last_body, ''),
+        u.last_at, NULL, '', '', 0, u.last_at
+      FROM unknown_senders u WHERE u.channel = 'email';
+    `);
   }
   return db;
 }
@@ -279,6 +305,92 @@ export function dismissUnknown(id: string): void {
   getDb().query("DELETE FROM unknown_senders WHERE id = ?").run(id);
 }
 
+// ---------- inbox: 30-day agent-organized email home ----------
+export interface InboxRow {
+  id: string; from_email: string; from_name: string; subject: string; body: string;
+  at: string; external_id: string | null; contact_id: string; message_id: string;
+  read: number; category: TriageCategory;
+}
+
+/** Insert an inbound email; dedupe by external_id. Returns the row id. */
+export function upsertInbox(e: {
+  from_email: string; from_name?: string; subject?: string; body?: string; at: string;
+  external_id?: string | null; contact_id?: string; message_id?: string;
+}): string {
+  const d = getDb();
+  const ext = e.external_id || null;
+  if (ext) {
+    const existing = d.query("SELECT id FROM inbox WHERE external_id = ?").get(ext) as { id: string } | null;
+    if (existing) {
+      // link late-arriving contact/message info
+      if (e.contact_id || e.message_id) {
+        d.query("UPDATE inbox SET contact_id = CASE WHEN ? != '' THEN ? ELSE contact_id END, message_id = CASE WHEN ? != '' THEN ? ELSE message_id END WHERE id = ?")
+          .run(e.contact_id || "", e.contact_id || "", e.message_id || "", e.message_id || "", existing.id);
+      }
+      return existing.id;
+    }
+  }
+  const id = "inb_" + uid();
+  d.query("INSERT INTO inbox(id, from_email, from_name, subject, body, at, external_id, contact_id, message_id, read, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, e.from_email, e.from_name || "", e.subject || "", e.body || "", e.at, ext,
+      e.contact_id || "", e.message_id || "", 0, nowIso());
+  return id;
+}
+
+export function untriagedInbox(limit = 500): Array<{ id: string; from_email: string; subject: string; body: string; message_id: string }> {
+  return getDb().query(`
+    SELECT i.id, i.from_email, i.subject, i.body, i.message_id FROM inbox i
+    LEFT JOIN triage t ON t.message_id = i.id
+    WHERE t.message_id IS NULL ORDER BY i.at ASC LIMIT ?
+  `).all(limit) as Array<{ id: string; from_email: string; subject: string; body: string; message_id: string }>;
+}
+
+const INBOX_WINDOW_DAYS = 30;
+
+export function listInbox(): InboxRow[] {
+  const since = new Date(Date.now() - INBOX_WINDOW_DAYS * 86400_000).toISOString();
+  return getDb().query(`
+    SELECT i.*, COALESCE(t.category, 'personal') AS category FROM inbox i
+    LEFT JOIN triage t ON t.message_id = i.id
+    WHERE i.at >= ? ORDER BY i.at DESC
+  `).all(since) as InboxRow[];
+}
+
+export function getInbox(id: string): (InboxRow & { contact_name?: string }) | null {
+  const r = getDb().query(`
+    SELECT i.*, COALESCE(t.category, 'personal') AS category, ct.name AS contact_name FROM inbox i
+    LEFT JOIN triage t ON t.message_id = i.id
+    LEFT JOIN contacts ct ON ct.id = i.contact_id
+    WHERE i.id = ?
+  `).get(id) as any;
+  return r || null;
+}
+
+export function setInboxRead(id: string, read: boolean): void {
+  getDb().query("UPDATE inbox SET read = ? WHERE id = ?").run(read ? 1 : 0, id);
+}
+
+export function deleteInbox(id: string): void {
+  const d = getDb();
+  d.query("DELETE FROM triage WHERE message_id = ?").run(id);
+  d.query("DELETE FROM inbox WHERE id = ?").run(id);
+}
+
+export function inboxUnread(): number {
+  const since = new Date(Date.now() - INBOX_WINDOW_DAYS * 86400_000).toISOString();
+  const r = getDb().query("SELECT COUNT(*) AS n FROM inbox WHERE at >= ? AND read = 0").get(since) as { n: number };
+  return r.n;
+}
+
+/** Set triage on an id and mirror across a linked inbox/message pair. */
+export function mirrorTriage(id: string, category: TriageCategory, reason: string, confidence: number, source: string, evidence: string): void {
+  setTriage(id, category, reason, confidence, source, evidence);
+  const d = getDb();
+  const inb = d.query("SELECT message_id FROM inbox WHERE id = ?").get(id) as { message_id: string } | null;
+  if (inb?.message_id) setTriage(inb.message_id, category, reason, confidence, source, evidence);
+  const msg = d.query("SELECT id FROM inbox WHERE message_id = ?").get(id) as { id: string } | null;
+  if (msg) setTriage(msg.id, category, reason, confidence, source, evidence);
+}
 // ---------- triage: deterministic email classification ----------
 export type TriageCategory = "personal" | "newsletter" | "receipt" | "automated";
 

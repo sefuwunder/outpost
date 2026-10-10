@@ -3,7 +3,7 @@
 
 import {
   getContact, conversationFor, addMessage, findContactByEmail, findContactByPhone,
-  findContactByMatrixId, upsertUnknown, getSetting, setSetting,
+  findContactByMatrixId, upsertUnknown, upsertInbox, getSetting, setSetting,
   type Channel, type Contact,
 } from "./db";
 import { extractEmail, type UnseenMail } from "./imap";
@@ -58,22 +58,34 @@ export interface PollReport { email: number; sms: number; matrix: number; unknow
 export async function pollInbox(t: Transports): Promise<PollReport> {
   const report: PollReport = { email: 0, sms: 0, matrix: 0, unknown: 0 };
 
-  // --- email: match by sender address ---
+  // --- email: match by sender address; every mail lands in the inbox too ---
   try {
     for (const m of await t.fetchEmail()) {
       const addr = extractEmail(m.from || "");
       const c = findContactByEmail(addr);
       const at = m.dateTime || new Date().toISOString();
+      const extId = m.messageId ? `email:${m.messageId}` : (m.uid ? `email:${m.uid}@${addr}` : null);
       if (c) {
         const conv = conversationFor(c.id);
         const added = addMessage({
           conversation_id: conv.id, channel: "email", direction: "in",
           body: m.body || m.snippet, subject: m.subject || "",
-          external_id: m.messageId ? `email:${m.messageId}` : `email:${m.uid}@${addr}`,
+          external_id: extId || `email:${m.uid || Date.now()}@${addr}`,
           created_at: at,
         });
-        if (added) report.email++;
+        if (added) {
+          upsertInbox({
+            from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
+            body: m.body || m.snippet, at, external_id: extId,
+            contact_id: c.id, message_id: added.id,
+          });
+          report.email++;
+        }
       } else if (addr.includes("@")) {
+        upsertInbox({
+          from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
+          body: m.body || m.snippet, at, external_id: extId,
+        });
         upsertUnknown("email", addr, "", m.body || m.snippet, at);
         report.unknown++;
       }
@@ -122,8 +134,14 @@ export async function pollInbox(t: Transports): Promise<PollReport> {
   return report;
 }
 
-function findContactByMatrixRoom(roomId: string): Contact | null {
-  if (!roomId) return null;
+/** "Jane Appleseed <jane@x.com>" → "Jane Appleseed"; bare address → "". */
+function extractName(from: string): string {
+  const m = from.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>/);
+  if (m) return m[1].trim();
+  return "";
+}
+
+function findContactByMatrixRoom(roomId: string): Contact | null {  if (!roomId) return null;
   const { listContacts } = require("./db") as typeof import("./db");
   for (const c of listContacts(true)) {
     if (getSetting(`matrix_room:${c.id}`) === roomId) return c;

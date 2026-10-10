@@ -23,9 +23,17 @@
 <main id="view-list" class="view">
   <div class="narrow">
     <div class="searchrow"><input id="search" type="search" placeholder="Search" autocomplete="off"></div>
-    <div id="chips" class="chips"></div>
-    <div id="unknown-strip" hidden></div>
-    <div id="conv-list"></div>
+    <div class="segwrap"><div class="seg" id="main-seg">
+      <button data-tab="inbox" class="on">Inbox</button><button data-tab="chats">Chats</button>
+    </div></div>
+    <div id="inbox-pane">
+      <div id="inbox-list"></div>
+    </div>
+    <div id="chats-pane" hidden>
+      <div id="chips" class="chips"></div>
+      <div id="unknown-strip" hidden></div>
+      <div id="conv-list"></div>
+    </div>
   </div>
   <button id="btn-new-contact" class="fab" title="New contact">＋</button>
 
@@ -36,6 +44,17 @@
     <button class="sheet-btn dim sheet-cancel" id="sheet-cancel">Cancel</button>
   </div>
 </div>
+</main>
+
+<main id="view-email" class="view" hidden>
+  <div class="navbar" style="padding-top: env(safe-area-inset-top)">
+    <div class="row">
+      <button id="btn-email-back" class="navbtn">‹ Inbox</button>
+      <div class="navtitle"><h1></h1></div>
+      <div style="min-width:64px"></div>
+    </div>
+  </div>
+  <div class="narrow"><div id="email-body" style="padding:4px 16px 40px"></div></div>
 </main>
 
 <main id="view-nudges" class="view" hidden>

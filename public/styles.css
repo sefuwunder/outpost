@@ -97,6 +97,7 @@ body {
 button.chanpill { font-family: inherit; cursor: pointer; background: none; }
 .empty { text-align: center; color: var(--muted); padding: 60px 30px; font-size: 15px; line-height: 1.6; }
 
+.sheet-wrap[hidden] { display: none; }
 /* iOS-style action sheet */
 .sheet-wrap {
   position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.35);
@@ -119,7 +120,54 @@ button.chanpill { font-family: inherit; cursor: pointer; background: none; }
   .sheet-title, #sheet-body, .sheet-btn.sheet-cancel { background: var(--bg-grouped); }
 }
 
-/* filter chips */
+/* segmented control */
+.segwrap { display: flex; justify-content: center; padding: 2px 16px 10px; }
+.seg {
+  display: flex; background: var(--field); border-radius: 10px; padding: 2px; width: 100%; max-width: 320px;
+}
+.seg button {
+  flex: 1; border: none; background: none; color: var(--ink); font-size: 14px; font-weight: 500;
+  border-radius: 8px; padding: 7px 0; cursor: pointer;
+}
+.seg button.on { background: var(--bg); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+@media (prefers-color-scheme: dark) { .seg button.on { background: #3a3a3c; } }
+
+/* inbox sections */
+.inbox-sec { margin-bottom: 6px; }
+.inbox-sec-h {
+  display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: none;
+  padding: 14px 16px 6px; font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; color: var(--muted); cursor: pointer; text-align: left;
+}
+.inbox-sec-h .count { font-weight: 600; }
+.inbox-sec-h .chev { margin-left: auto; font-size: 12px; }
+.mailrow {
+  display: flex; gap: 12px; padding: 10px 16px; cursor: pointer; align-items: flex-start;
+  border-bottom: 0.5px solid var(--hairline);
+}
+.mailrow .dot { width: 10px; padding-top: 16px; }
+.mailrow .dot i { display: block; width: 10px; height: 10px; border-radius: 50%; background: transparent; }
+.mailrow.unread .dot i { background: var(--accent); }
+.mailrow .meta { flex: 1; min-width: 0; }
+.mailrow .row1 { display: flex; align-items: baseline; gap: 8px; }
+.mailrow h3 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mailrow.unread h3 { font-weight: 700; }
+.mailrow time { margin-left: auto; font-size: 13px; color: var(--muted); flex-shrink: 0; }
+.mailrow .subj { margin: 1px 0; font-size: 14px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mailrow.unread .subj { font-weight: 600; color: var(--ink); }
+.mailrow .snip { margin: 0; font-size: 14px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* email reader */
+.email-subject { font-size: 22px; font-weight: 700; margin: 8px 0 12px; line-height: 1.25; }
+.email-from { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 0.5px solid var(--hairline); border-bottom: 0.5px solid var(--hairline); }
+.email-from .who { flex: 1; min-width: 0; }
+.email-from .who b { display: block; font-size: 15px; }
+.email-from .who span { font-size: 13px; color: var(--muted); }
+.email-date { font-size: 13px; color: var(--muted); }
+.email-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; padding: 14px 0; }
+.email-actions { display: flex; gap: 20px; padding: 8px 0 20px; }
+.email-actions button { background: none; border: none; color: var(--accent); font-size: 16px; cursor: pointer; padding: 6px 0; }
+.email-actions button.dim { color: var(--muted); }
 .chips { display: flex; gap: 8px; padding: 2px 16px 10px; overflow-x: auto; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .chips button {

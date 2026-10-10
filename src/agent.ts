@@ -2,7 +2,7 @@
 // explicit rules over message metadata, safe to run on every poll.
 
 import {
-  getDb, setTriage, untriagedEmail, upsertNudge, pruneNudges, listActiveNudges,
+  getDb, setTriage, untriagedEmail, untriagedInbox, upsertNudge, pruneNudges, listActiveNudges,
   listUnknown, type TriageCategory,
 } from "./db";
 import { ensureSeeded, classify, modelTrusted, type JevClass } from "./jev";
@@ -41,23 +41,22 @@ export interface AgentReport { triaged: number; nudges: number; pruned: number }
 export function runAgent(nowMs = Date.now()): AgentReport {
   ensureSeeded();
   let triaged = 0;
-  for (const m of untriagedEmail()) {
-    const input = { from: m.from_email, subject: m.subject, body: m.body };
-    // Fuzzy first: trust the learned model once it has seen enough evidence;
-    // the deterministic rules stay the day-one fallback.
+  const triageOne = (id: string, from: string, subject: string, body: string, mirrorTo?: string) => {
+    const input = { from, subject, body };
     if (modelTrusted(input)) {
       const j = classify(input);
-      setTriage(
-        m.id, j.label as TriageCategory,
-        `model ${(j.confidence * 100).toFixed(0)}% — ${j.evidence.slice(0, 3).map((e) => `${e.feature} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}`,
-        j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6))
-      );
+      const reason = `model ${(j.confidence * 100).toFixed(0)}% — ${j.evidence.slice(0, 3).map((e) => `${e.feature} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}`;
+      setTriage(id, j.label as TriageCategory, reason, j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6)));
+      if (mirrorTo) setTriage(mirrorTo, j.label as TriageCategory, reason, j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6)));
     } else {
-      const c = classifyEmail({ from: m.from_email, subject: m.subject, body: m.body });
-      setTriage(m.id, c.category, c.reason, 0, "rules", "");
+      const c = classifyEmail({ from, subject, body });
+      setTriage(id, c.category, c.reason, 0, "rules", "");
+      if (mirrorTo) setTriage(mirrorTo, c.category, c.reason, 0, "rules", "");
     }
     triaged++;
-  }
+  };
+  for (const m of untriagedEmail()) triageOne(m.id, m.from_email, m.subject, m.body);
+  for (const i of untriagedInbox()) triageOne(i.id, i.from_email, i.subject, i.body, i.message_id || undefined);
 
   const d = getDb();
   const valid = new Set<string>();
