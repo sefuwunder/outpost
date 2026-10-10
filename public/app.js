@@ -210,9 +210,37 @@ $("search").addEventListener("input", (e) => {
 $("btn-poll").addEventListener("click", async () => {
   const b = $("btn-poll");
   b.style.transform = "rotate(180deg)";
-  try { await api("/api/poll", { method: "POST" }); await refresh(); }
+  try {
+    const r = await api("/api/poll", { method: "POST" });
+    await refresh();
+    toast(pollSummary(r.lastPoll?.report));
+  } catch (e) { toast("Poll failed: " + e.message); }
   finally { setTimeout(() => b.style.transform = "", 400); }
 });
+
+let toastTimer = null;
+function toast(msg, ms = 4500) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), ms);
+}
+
+function pollSummary(rep) {
+  if (!rep) return "Checked.";
+  if (rep.error) return "⚠ " + rep.error;
+  const parts = [];
+  const n = (rep.email || 0) + (rep.unknown || 0);
+  if (n) parts.push(n + (n === 1 ? " new email" : " new emails"));
+  if (rep.backfilled && !rep.backfilled.error) {
+    const b = (rep.backfilled.email || 0) + (rep.backfilled.unknown || 0);
+    if (b) parts.push("imported " + b + " recent");
+  }
+  if (rep.backfilled?.error) parts.push("import failed: " + rep.backfilled.error);
+  if (rep.triaged) parts.push(rep.triaged + " organized");
+  return parts.length ? parts.join(" · ") : "No new mail.";
+}
 
 // ---------- triage learning: correct a label, see why ----------
 const TRIAGE_CATS = ["personal", "newsletter", "receipt", "automated"];
@@ -293,7 +321,19 @@ function renderInbox() {
       <button class="inbox-sec-h" data-sec="${s.id}">${s.label} <span class="count">· ${rows.length}${unread ? ` · ${unread} new` : ""}</span><span class="chev">${collapsed ? "›" : "⌄"}</span></button>
       ${body}</div>`;
   }).join("");
-  list.innerHTML = html || `<div class="empty">No email in the last 30 days.<br>Connect email in ⚙️ Settings, then tap ⟳.</div>`;
+  list.innerHTML = html || `<div class="empty">No email in the last 30 days.<br>
+    <span style="font-size:13px">The poller only sees unread mail — tap below to import<br>everything recent, read or not.</span><br><br>
+    <button id="btn-backfill" class="primary" style="padding:10px 22px">Import recent mail</button></div>`;
+  $("btn-backfill")?.addEventListener("click", async () => {
+    toast("Importing recent mail…", 10000);
+    try {
+      const r = await api("/api/inbox/backfill", { method: "POST" });
+      if (!r.ok) throw new Error(r.error || "import failed");
+      const n = (r.email || 0) + (r.unknown || 0);
+      toast(n ? `Imported ${n} emails.` : "Nothing new to import.");
+    } catch (e) { toast("Import failed: " + e.message); }
+    loadInbox();
+  });
   list.querySelectorAll(".inbox-sec-h").forEach((b) => b.addEventListener("click", () => {
     state.secCollapsed[b.dataset.sec] = !state.secCollapsed[b.dataset.sec];
     renderInbox();

@@ -168,6 +168,16 @@ button.chanpill { font-family: inherit; cursor: pointer; background: none; }
 .email-actions { display: flex; gap: 20px; padding: 8px 0 20px; }
 .email-actions button { background: none; border: none; color: var(--accent); font-size: 16px; cursor: pointer; padding: 6px 0; }
 .email-actions button.dim { color: var(--muted); }
+/* toast */
+.toast {
+  position: fixed; bottom: calc(28px + env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%) translateY(8px); background: rgba(28,28,30,0.92); color: #fff;
+  padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 100;
+  opacity: 0; transition: opacity 0.25s, transform 0.25s; pointer-events: none;
+  max-width: 88vw; text-align: center;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 .chips { display: flex; gap: 8px; padding: 2px 16px 10px; overflow-x: auto; scrollbar-width: none; }
 .chips::-webkit-scrollbar { display: none; }
 .chips button {

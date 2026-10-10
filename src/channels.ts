@@ -54,42 +54,61 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
 
 export interface PollReport { email: number; sms: number; matrix: number; unknown: number }
 
+/** Ingest one inbound email: inbox row always, contact thread when known. */
+export function ingestEmail(m: UnseenMail, report: PollReport): void {
+  const addr = extractEmail(m.from || "");
+  if (!addr.includes("@")) return;
+  const at = m.dateTime || new Date().toISOString();
+  const extId = m.messageId ? `email:${m.messageId}` : (m.uid ? `email:uid-${m.uid}@${addr}` : null);
+  const c = findContactByEmail(addr);
+  if (c) {
+    const conv = conversationFor(c.id);
+    const added = addMessage({
+      conversation_id: conv.id, channel: "email", direction: "in",
+      body: m.body || m.snippet, subject: m.subject || "",
+      external_id: extId || `email:${m.uid || Date.now()}@${addr}`,
+      created_at: at,
+    });
+    if (added) {
+      upsertInbox({
+        from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
+        body: m.body || m.snippet, at, external_id: extId,
+        contact_id: c.id, message_id: added.id,
+      });
+      report.email++;
+    }
+  } else {
+    upsertInbox({
+      from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
+      body: m.body || m.snippet, at, external_id: extId,
+    });
+    upsertUnknown("email", addr, "", m.body || m.snippet, at);
+    report.unknown++;
+  }
+}
+
+/** One-time backfill: recent mail regardless of \Seen, into the inbox.
+ *  Read-only on the server (no flags touched). Bounded by limit. */
+export async function backfillInbox(days = 30, limit = 200, secure = true): Promise<PollReport> {
+  const imap = require("./imap") as typeof import("./imap");
+  if (!getSetting("imap_host") || !getSetting("imap_user"))
+    throw new Error("email not configured — add it in ⚙️ Channels first");
+  const report: PollReport = { email: 0, sms: 0, matrix: 0, unknown: 0 };
+  const cfg = {
+    host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993),
+    user: getSetting("imap_user"), pass: getSetting("imap_pass"), secure,
+  };
+  for (const m of await imap.fetchRecent(cfg, days, limit, "INBOX")) ingestEmail(m, report);
+  return report;
+}
+
 /** One inbound sweep across every configured channel. Best-effort per channel. */
 export async function pollInbox(t: Transports): Promise<PollReport> {
   const report: PollReport = { email: 0, sms: 0, matrix: 0, unknown: 0 };
 
-  // --- email: match by sender address; every mail lands in the inbox too ---
+  // --- email: UNSEEN only; the backfill covers already-read mail ---
   try {
-    for (const m of await t.fetchEmail()) {
-      const addr = extractEmail(m.from || "");
-      const c = findContactByEmail(addr);
-      const at = m.dateTime || new Date().toISOString();
-      const extId = m.messageId ? `email:${m.messageId}` : (m.uid ? `email:${m.uid}@${addr}` : null);
-      if (c) {
-        const conv = conversationFor(c.id);
-        const added = addMessage({
-          conversation_id: conv.id, channel: "email", direction: "in",
-          body: m.body || m.snippet, subject: m.subject || "",
-          external_id: extId || `email:${m.uid || Date.now()}@${addr}`,
-          created_at: at,
-        });
-        if (added) {
-          upsertInbox({
-            from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
-            body: m.body || m.snippet, at, external_id: extId,
-            contact_id: c.id, message_id: added.id,
-          });
-          report.email++;
-        }
-      } else if (addr.includes("@")) {
-        upsertInbox({
-          from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
-          body: m.body || m.snippet, at, external_id: extId,
-        });
-        upsertUnknown("email", addr, "", m.body || m.snippet, at);
-        report.unknown++;
-      }
-    }
+    for (const m of await t.fetchEmail()) ingestEmail(m, report);
   } catch { /* channel down — next sweep */ }
 
   // --- sms via google voice forwards: match by digits ---

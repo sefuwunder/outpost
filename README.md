@@ -49,6 +49,10 @@ something specific.
   unread counts), with a reader view per email: Open chat / Add to Contacts
   for unknown senders, read/unread, delete. The category label in the reader
   is tappable — the same correction sheet that teaches the model.
+  The 60s poller only sees *unread* mail; a first-run auto-backfill plus an
+  "Import recent mail" button pull the last 30 days read-or-not (read-only,
+  no flags touched). Tapping ⟳ reports what happened via toast — including
+  poll errors, which used to be swallowed silently.
 - **Agent** — deterministic, rule-based (no AI): every inbound email is
   classified (personal / newsletter / receipt / automated — unsubscribe markers,
   bulk senders, receipt patterns, noreply addresses), and nudges are generated
@@ -95,5 +99,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 42 tests — inbox, jev model, agent rules, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 48 tests — imap backfill, inbox, jev model, agent rules, smtp, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```

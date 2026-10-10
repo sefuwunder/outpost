@@ -33,7 +33,23 @@ async function sweep() {
     const report = await pollInbox(realTransports());
     const { runAgent } = await import("./agent");
     const agent = runAgent();
-    lastPoll = { at: new Date().toISOString(), report: { ...report, ...agent } };
+    // First-run bootstrap: the inbox promises 30 days, but the poller only
+    // sees UNSEEN mail — backfill recent mail once while the inbox is empty.
+    let backfilled: unknown = null;
+    if (!getSetting("inbox_backfilled") && getSetting("imap_host") && getSetting("imap_user")) {
+      const n = (getDb().query("SELECT COUNT(*) AS n FROM inbox").get() as { n: number }).n;
+      if (n === 0) {
+        try {
+          const { backfillInbox } = await import("./channels");
+          backfilled = await backfillInbox(30, 200);
+          runAgent();
+        } catch (e: any) {
+          backfilled = { error: String(e?.message || e).slice(0, 200) };
+        }
+      }
+      setSetting("inbox_backfilled", "1");
+    }
+    lastPoll = { at: new Date().toISOString(), report: { ...report, ...agent, backfilled } };
   } catch (e: any) {
     lastPoll = { at: new Date().toISOString(), report: { error: String(e?.message || e).slice(0, 200) } };
   } finally {
@@ -166,6 +182,18 @@ Bun.serve({
       if (p === "/api/poll" && req.method === "POST") {
         await sweep();
         return json({ ok: true, lastPoll });
+      }
+      if (p === "/api/inbox/backfill" && req.method === "POST") {
+        const { backfillInbox } = await import("./channels");
+        try {
+          const r = await backfillInbox(30, 200);
+          const { runAgent } = await import("./agent");
+          const agent = runAgent();
+          setSetting("inbox_backfilled", "1");
+          return json({ ok: true, ...r, ...agent });
+        } catch (e: any) {
+          return json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
       }
       if (p === "/api/agent/run" && req.method === "POST") {
         const { runAgent } = await import("./agent");

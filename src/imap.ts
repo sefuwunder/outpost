@@ -701,6 +701,45 @@ export function extractEmail(from: string): string {
   return (m2 ? m2[1] : from).toLowerCase().trim();
 }
 
+/**
+ * Recent mail regardless of \Seen — the backfill behind the 30-day inbox.
+ * Read-only: no flags are touched. Returns newest-first, bounded by limit.
+ */
+export async function fetchRecent(cfg0: ImapConfig, days = 30, limit = 200, mailbox = "INBOX"): Promise<UnseenMail[]> {
+  const conn = await login(cfg0, mailbox);
+  try {
+    const d = new Date(Date.now() - days * 86400_000);
+    const mon = Object.keys(MONTHS)[d.getMonth()];
+    const since = `${String(d.getDate()).padStart(2, "0")}-${mon}-${d.getFullYear()}`;
+    const uids = parseSearchUids(await conn.cmd("c001", `UID SEARCH SINCE ${since}`));
+    if (!uids.length) return [];
+    const picked = uids.slice(-Math.min(limit, 500));
+    const envs = await fetchEnvelopes(conn, "c002", picked);
+    const bodies = await fetchSnippets(conn, "c003", picked, 4000);
+    const rps = await fetchReturnPaths(conn, "c004", picked);
+    const mails: UnseenMail[] = [];
+    for (const uid of picked) {
+      const e = envs.get(uid) || { from: "", subject: "", date: "", messageId: "", to: [] as string[], dateTime: "" };
+      const body = bodies.get(uid) || "";
+      mails.push({
+        uid,
+        from: e.from,
+        to: e.to,
+        subject: e.subject || "(no subject)",
+        date: e.date,
+        dateTime: e.dateTime || "",
+        snippet: body.slice(0, 280),
+        body,
+        returnPath: rps.get(uid) || "",
+        messageId: e.messageId || "",
+      });
+    }
+    return mails.reverse(); // newest first
+  } finally {
+    conn.close();
+  }
+}
+
 // ---------- sent-folder contact harvesting ----------
 
 export interface HarvestedContact {

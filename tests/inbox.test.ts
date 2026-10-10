@@ -77,3 +77,26 @@ test("mirrorTriage keeps inbox and message labels in sync on correction", () => 
   expect(db.getTriage(inboxId)).toBe("receipt");
   expect(db.getTriage(m.id)).toBe("receipt");
 });
+
+test("ingestEmail routes to contact thread + inbox, or unknown + inbox", async () => {
+  const ch = await import("../src/channels.ts");
+  const c = db.createContact({ name: "Ada", email: "ada@x.com" });
+  const report: any = { email: 0, sms: 0, matrix: 0, unknown: 0 };
+  ch.ingestEmail({ uid: "1", from: "Ada Lovelace <ada@x.com>", to: [], subject: "Hi", date: "2026-10-01", dateTime: new Date().toISOString(), snippet: "yo", body: "yo yo", returnPath: "", messageId: "m1" }, report);
+  ch.ingestEmail({ uid: "2", from: "stranger@x.com", to: [], subject: "Hey", date: "2026-10-01", dateTime: new Date().toISOString(), snippet: "hi", body: "hi", returnPath: "", messageId: "m2" }, report);
+  expect(report.email).toBe(1);
+  expect(report.unknown).toBe(1);
+  const conv = db.conversationFor(c.id);
+  expect(db.listMessages(conv.id).length).toBe(1);
+  expect(db.listInbox().length).toBe(2);
+  expect(db.listUnknown().length).toBe(1);
+  // re-ingest dedupes (no doubles)
+  ch.ingestEmail({ uid: "1", from: "ada@x.com", to: [], subject: "Hi", date: "2026-10-01", dateTime: new Date().toISOString(), snippet: "yo", body: "yo yo", returnPath: "", messageId: "m1" }, report);
+  expect(report.email).toBe(1);
+  expect(db.listInbox().length).toBe(2);
+});
+
+test("backfillInbox throws when email is not configured", async () => {
+  const ch = await import("../src/channels.ts");
+  await expect(ch.backfillInbox()).rejects.toThrow("not configured");
+});
