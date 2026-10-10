@@ -163,7 +163,7 @@ export function realTransports(): Transports {
     host: getSetting("smtp_host"), port: Number(getSetting("smtp_port") || 587),
     user: getSetting("smtp_user"), pass: getSetting("smtp_pass"),
     from: getSetting("smtp_from") || getSetting("imap_user"),
-    secure: getSetting("smtp_secure") !== "off",
+    secure: smtp.smtpSecureMode(getSetting("smtp_secure"), Number(getSetting("smtp_port") || 587)),
   });
   const matrixCfg = () => ({
     homeserver: getSetting("matrix_homeserver"),

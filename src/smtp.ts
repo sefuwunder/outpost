@@ -10,14 +10,30 @@ export class SmtpError extends Error {
   }
 }
 
+export type SmtpSecure = "ssl" | "starttls" | "none";
+
 export interface SmtpConfig {
   host: string;
   port: number;
-  secure: "ssl" | "starttls" | "none";
+  secure: SmtpSecure;
   user: string;
   pass: string;
   from: string; // envelope + From: address, e.g. you@gmail.com
   fromName?: string;
+}
+
+/**
+ * Map the `smtp_secure` setting + port to a real mode. "auto" (empty) picks
+ * by port: 465 → implicit SSL, anything else → STARTTLS. This is the fix
+ * for the old boolean `secure !== "off"` bug, which silently skipped TLS
+ * entirely and died with "530 Must issue a STARTTLS command first".
+ */
+export function smtpSecureMode(secureSetting: string, port: number): SmtpSecure {
+  const v = (secureSetting || "").trim().toLowerCase();
+  if (v === "ssl" || v === "implicit") return "ssl";
+  if (v === "starttls" || v === "tls") return "starttls";
+  if (v === "none" || v === "off" || v === "plain") return "none";
+  return Number(port) === 465 ? "ssl" : "starttls";
 }
 
 const TIMEOUT_MS = 30000;

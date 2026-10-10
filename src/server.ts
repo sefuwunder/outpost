@@ -154,7 +154,8 @@ Bun.serve({
           const im = await import("./imap");
           const sm = await import("./smtp");
           const imapCfg = { host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993), user: getSetting("imap_user"), pass: getSetting("imap_pass") };
-          const smtpCfg = { host: getSetting("smtp_host"), port: Number(getSetting("smtp_port") || 587), user: getSetting("smtp_user"), pass: getSetting("smtp_pass"), from: getSetting("smtp_from") || getSetting("imap_user"), secure: getSetting("smtp_secure") !== "off" };
+          const smtpPort = Number(getSetting("smtp_port") || 587);
+          const smtpCfg = { host: getSetting("smtp_host"), port: smtpPort, user: getSetting("smtp_user"), pass: getSetting("smtp_pass"), from: getSetting("smtp_from") || getSetting("imap_user"), secure: sm.smtpSecureMode(getSetting("smtp_secure"), smtpPort) };
           if (which === "email") { await im.validateImap(imapCfg); await sm.validateSmtp(smtpCfg); }
           else { await sm.validateSmtp(smtpCfg); await im.validateImap(imapCfg); } // sms rides both
           return json({ ok: true });

@@ -468,6 +468,7 @@ $("btn-settings").addEventListener("click", async () => {
   const s = await api("/api/settings");
   for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver"])
     $("s-" + k).value = s.values[k] || "";
+  $("s-smtp_secure").value = s.values["smtp_secure"] || "";
   $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = "";
   for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured]]) {
     const el = $("cfg-" + k);
@@ -479,7 +480,7 @@ $("btn-settings").addEventListener("click", async () => {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token"])
     payload[k] = $("s-" + k).value;
   for (const k of ["imap_pass", "smtp_pass", "matrix_token"]) if (!payload[k]) delete payload[k];
   await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });

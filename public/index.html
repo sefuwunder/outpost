@@ -133,6 +133,12 @@
     <label><span class="lab">IMAP password</span><input id="s-imap_pass" type="password" autocomplete="current-password"></label>
     <label><span class="lab">SMTP host</span><input id="s-smtp_host" placeholder="smtp.example.com"></label>
     <label><span class="lab">SMTP port</span><input id="s-smtp_port" inputmode="numeric" placeholder="587"></label>
+    <label><span class="lab">SMTP security</span><select id="s-smtp_secure">
+      <option value="">Auto (465 → SSL, else STARTTLS)</option>
+      <option value="starttls">STARTTLS</option>
+      <option value="ssl">SSL (implicit)</option>
+      <option value="none">None</option>
+    </select></label>
     <label><span class="lab">SMTP user</span><input id="s-smtp_user"></label>
     <label><span class="lab">SMTP password</span><input id="s-smtp_pass" type="password"></label>
     <label><span class="lab">From address</span><input id="s-smtp_from" placeholder="you@example.com"></label>

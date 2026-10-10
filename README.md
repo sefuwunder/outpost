@@ -21,6 +21,9 @@ bun src/server.ts
 Open **⚙️ Channels** first and add your IMAP/SMTP (email + SMS) and/or Matrix
 credentials. Secrets live server-side in SQLite and are never sent to the
 browser — the settings API only returns booleans and non-secret fields.
+SMTP security auto-detects from the port (465 → implicit SSL, anything else →
+STARTTLS); override it with the SMTP security selector if your provider needs
+something specific.
 
 ## How it works
 

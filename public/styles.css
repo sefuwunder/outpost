@@ -263,7 +263,7 @@ fieldset.card {
 }
 fieldset.card label { display: block; padding: 11px 0; border-bottom: 0.5px solid var(--hairline); font-size: 17px; }
 fieldset.card label:last-child { border-bottom: none; }
-fieldset.card input, fieldset.card textarea {
+fieldset.card input, fieldset.card textarea, fieldset.card select {
   border: none; background: none; outline: none; font-size: 17px; width: 100%;
   font-family: inherit; color: var(--ink); padding: 2px 0 0; display: block;
 }
