@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>outpost — the outer ring</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand"><span class="glyph">📡</span><div><h1>outpost</h1><p>the outer ring · beyond the 8</p></div></div>
+  <div class="top-actions">
+    <span id="unread-pill" class="unread-pill" hidden></span>
+    <button id="btn-poll" title="Check for new messages">⟳</button>
+    <button id="btn-contacts" title="Contacts">👥</button>
+    <button id="btn-settings" title="Settings">⚙️</button>
+  </div>
+</header>
+
+<main id="view-list" class="view">
+  <div class="searchrow"><input id="search" type="search" placeholder="Search conversations…" autocomplete="off"></div>
+  <div id="unknown-strip" hidden></div>
+  <div id="conv-list"></div>
+  <button id="btn-new-contact" class="fab" title="New contact">＋</button>
+</main>
+
+<main id="view-thread" class="view" hidden>
+  <div id="thread-head">
+    <button id="btn-back">‹</button>
+    <div><h2 id="thread-name"></h2><p id="thread-sub"></p></div>
+    <button id="btn-edit-contact" title="Edit contact">✎</button>
+  </div>
+  <div id="messages"></div>
+  <div id="composer">
+    <div id="chan-tabs"></div>
+    <div class="compose-row">
+      <textarea id="compose-text" rows="1" placeholder="Message…"></textarea>
+      <button id="btn-send">➤</button>
+    </div>
+  </div>
+</main>
+
+<main id="view-form" class="view" hidden>
+  <div class="formhead"><button id="btn-form-back">‹</button><h2 id="form-title">New contact</h2></div>
+  <form id="contact-form">
+    <label>Name<input id="f-name" required maxlength="80"></label>
+    <label>Email<input id="f-email" type="email" maxlength="120" placeholder="them@example.com"></label>
+    <label>Phone<input id="f-phone" type="tel" maxlength="30" placeholder="+1 555 000 1234"></label>
+    <label>Matrix ID<input id="f-matrix" maxlength="120" placeholder="@them:matrix.org"></label>
+    <label>Matrix room ID<input id="f-room" maxlength="200" placeholder="!room:matrix.org"></label>
+    <label>Notes<textarea id="f-notes" rows="3" maxlength="2000"></textarea></label>
+    <button class="primary" type="submit">Save contact</button>
+    <button class="ghost danger" type="button" id="btn-archive" hidden>Archive contact</button>
+  </form>
+</main>
+
+<main id="view-settings" class="view" hidden>
+  <div class="formhead"><button id="btn-settings-back">‹</button><h2>Channels</h2></div>
+  <div class="settings">
+    <section>
+      <h3>✉️ Email <span class="cfg" id="cfg-email"></span></h3>
+      <p class="note">IMAP inbox for receiving, SMTP for sending.</p>
+      <div class="grid2">
+        <label>IMAP host<input id="s-imap_host" placeholder="imap.example.com"></label>
+        <label>IMAP port<input id="s-imap_port" inputmode="numeric" placeholder="993"></label>
+        <label>IMAP user<input id="s-imap_user" autocomplete="username"></label>
+        <label>IMAP password<input id="s-imap_pass" type="password" autocomplete="current-password"></label>
+        <label>SMTP host<input id="s-smtp_host" placeholder="smtp.example.com"></label>
+        <label>SMTP port<input id="s-smtp_port" inputmode="numeric" placeholder="587"></label>
+        <label>SMTP user<input id="s-smtp_user"></label>
+        <label>SMTP password<input id="s-smtp_pass" type="password"></label>
+        <label>From address<input id="s-smtp_from" placeholder="you@example.com"></label>
+      </div>
+      <button class="ghost" data-test="email">Test email</button> <span class="testout" id="tout-email"></span>
+    </section>
+    <section>
+      <h3>💬 SMS <span class="cfg" id="cfg-sms"></span></h3>
+      <p class="note">Sends via your SMTP through Google Voice gateways; replies arrive as email forwards and are matched by number.</p>
+      <button class="ghost" data-test="sms">Test SMS path</button> <span class="testout" id="tout-sms"></span>
+    </section>
+    <section>
+      <h3>🟣 Matrix <span class="cfg" id="cfg-matrix"></span></h3>
+      <div class="grid2">
+        <label>Homeserver<input id="s-matrix_homeserver" placeholder="https://matrix.org"></label>
+        <label>Access token<input id="s-matrix_token" type="password"></label>
+      </div>
+      <button class="ghost" data-test="matrix">Test Matrix</button> <span class="testout" id="tout-matrix"></span>
+    </section>
+    <button class="primary" id="btn-save-settings">Save channels</button>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
