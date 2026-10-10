@@ -2,7 +2,7 @@
 import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listConversations, conversationFor, listMessages, markRead, totalUnread,
   listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
-  listActiveNudges, dismissNudge, snoozeNudge,
+  listActiveNudges, dismissNudge, snoozeNudge, getTriageFull,
   getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
 
@@ -170,10 +170,47 @@ Bun.serve({
         return json({ ok: true, ...runAgent() });
       }
       if (p === "/api/nudges" && req.method === "GET") {
-        return json({ nudges: listActiveNudges() });
+        const { scoreNudge } = await import("./jev");
+        const nudges = listActiveNudges()
+          .map((n) => ({ ...n, score: scoreNudge(n) }))
+          .sort((a, b) => b.score - a.score);
+        return json({ nudges });
       }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/dismiss$/);
-      if (m && req.method === "POST") { dismissNudge(m[1]); return json({ ok: true }); }
+      if (m && req.method === "POST") {
+        const { recordNudgeFeedback } = await import("./jev");
+        const n = getDb().query("SELECT kind FROM nudges WHERE id = ?").get(m[1]) as { kind: string } | null;
+        if (n) recordNudgeFeedback(n.kind, false); // dismissed → learn it wasn't wanted
+        dismissNudge(m[1]);
+        return json({ ok: true });
+      }
+      m = p.match(/^\/api\/nudges\/([\w-]+)\/acted$/);
+      if (m && req.method === "POST") {
+        const { recordNudgeFeedback } = await import("./jev");
+        const n = getDb().query("SELECT kind FROM nudges WHERE id = ?").get(m[1]) as { kind: string } | null;
+        if (n) recordNudgeFeedback(n.kind, true); // opened the thread → useful
+        return json({ ok: true });
+      }
+      if (p === "/api/triage/explain" && req.method === "GET") {
+        const messageId = url.searchParams.get("messageId") || "";
+        const t = getTriageFull(messageId);
+        if (!t) return bad("not found", 404);
+        return json({ ...t, evidence: t.evidence ? JSON.parse(t.evidence) : [] });
+      }
+      m = p.match(/^\/api\/triage\/([\w-]+)\/correct$/);
+      if (m && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as { category?: string };
+        if (!["personal", "newsletter", "receipt", "automated"].includes(b.category || "")) return bad("bad category");
+        const { learn } = await import("./jev");
+        const msg = getDb().query(`
+          SELECT m.subject, m.body, ct.email FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?`).get(m[1]) as any;
+        if (!msg) return bad("not found", 404);
+        learn(b.category as any, { from: msg.email || "", subject: msg.subject || "", body: msg.body || "" });
+        setTriage(m[1], b.category as any, "corrected by you — model updated", 1, "user", "");
+        return json({ ok: true });
+      }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/snooze$/);
       if (m && req.method === "POST") {
         const b = await req.json().catch(() => ({})) as { days?: number };

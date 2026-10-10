@@ -73,19 +73,25 @@ function renderList() {
     return;
   }
   list.innerHTML = rows.map((c) => {
-    const cat = (c.category || "personal") !== "personal" ? `<span class="chanpill">${c.category}</span>` : "";
+    const cat = c.category || "personal";
+    const catpill = cat !== "personal" && c.last_email_msg
+      ? `<button class="chanpill catbtn" data-mid="${c.last_email_msg}" data-cat="${cat}">${cat}</button>` : "";
     return `
     <div class="conv${c.unread ? " unread" : ""}" data-id="${c.id}">
       <div class="dot"><i></i></div>
       <div class="avatar" style="${avatarStyle(c.contact_name)}">${esc(initials(c.contact_name))}</div>
       <div class="meta">
         <div class="row1"><h3>${esc(c.contact_name)}</h3>${needReply.has(c.id) ? '<span style="color:var(--accent);font-size:13px;font-weight:700">needs reply</span>' : ""}<time>${fmtTime(c.last_at)}</time></div>
-        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${cat}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
+        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${catpill}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
       </div>
     </div>`;
   }).join("");
   list.querySelectorAll(".conv").forEach((el) =>
     el.addEventListener("click", () => openThread(el.dataset.id)));
+  list.querySelectorAll(".catbtn").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openTriageSheet(b.dataset.mid, b.dataset.cat);
+  }));
 }
 
 async function loadUnknown() {
@@ -205,6 +211,31 @@ $("btn-poll").addEventListener("click", async () => {
   finally { setTimeout(() => b.style.transform = "", 400); }
 });
 
+// ---------- triage learning: correct a label, see why ----------
+const TRIAGE_CATS = ["personal", "newsletter", "receipt", "automated"];
+
+function closeSheet() { $("sheet-wrap").hidden = true; }
+$("sheet-cancel").addEventListener("click", closeSheet);
+$("sheet-wrap").addEventListener("click", (e) => { if (e.target === $("sheet-wrap")) closeSheet(); });
+
+async function openTriageSheet(messageId, current) {
+  const t = await api("/api/triage/explain?messageId=" + encodeURIComponent(messageId));
+  $("sheet-title").textContent = `Labeled "${t.category}" · ${t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : "rules"}`;
+  const why = t.source === "model" && t.evidence.length
+    ? `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">Because: ${t.evidence.slice(0, 3).map((e) => `${esc(e.feature)} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}</div>`
+    : `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">${esc(t.reason)}</div>`;
+  $("sheet-body").innerHTML = why + TRIAGE_CATS.map((c) =>
+    `<button class="sheet-btn${c === current ? " on" : ""}" data-cat="${c}">${c[0].toUpperCase() + c.slice(1)}${c === current ? " ✓" : ""}</button>`).join("");
+  $("sheet-body").querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
+    if (b.dataset.cat !== current) {
+      await api(`/api/triage/${messageId}/correct`, { method: "POST", body: JSON.stringify({ category: b.dataset.cat }) });
+      await refresh();
+    }
+    closeSheet();
+  }));
+  $("sheet-wrap").hidden = false;
+}
+
 // ---------- nudges ----------
 const KIND_LABEL = { reply_needed: "Reply", follow_up: "Follow up", unknown_waiting: "New sender" };
 
@@ -230,7 +261,11 @@ async function loadNudges() {
     card.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
       const id = card.dataset.id;
       const n = state.nudges.find((x) => x.id === id);
-      if (b.dataset.act === "open" && n?.conversation_id) { openThread(n.conversation_id); return; }
+      if (b.dataset.act === "open" && n?.conversation_id) {
+        await api(`/api/nudges/${id}/acted`, { method: "POST" }); // useful → learn
+        openThread(n.conversation_id);
+        return;
+      }
       if (b.dataset.act === "snooze") await api(`/api/nudges/${id}/snooze`, { method: "POST", body: JSON.stringify({ days: 3 }) });
       else await api(`/api/nudges/${id}/dismiss`, { method: "POST" });
       await refresh();

@@ -42,6 +42,16 @@ browser — the settings API only returns booleans and non-secret fields.
   Newsletters never trigger reply nudges. Runs after every poll; idempotent.
   🔔 bell with badge, nudge cards with Open / Snooze / Dismiss, and filter
   chips (All · Needs reply · Personal · Newsletters · Receipts · Automated).
+- **Jev-style decision model** (`src/jev.ts`) — local, zero-dep, in the spirit
+  of TypeSafe's Jev: typed `classify`/`score` with calibrated confidence and
+  evidence. An online Naive Bayes over sender/subject/word features grades
+  every email (label + confidence + top evidence); once it has seen enough
+  evidence it takes over from the rules, which stay the day-one fallback.
+  It learns from you: tap a category pill → correct the label ("why" shows the
+  evidence weights) and the model updates immediately. Nudges are fuzzy-scored
+  too — per-kind acted/dismissed rates plus an urgency ramp rank the 🔔 list,
+  so nudge types you always dismiss sink over time. All counts live in SQLite;
+  nothing leaves the machine.
 - **Inbound poll** — IMAP UNSEEN sweep + Google Voice SMS harvest + Matrix
   `/sync` every 60s (best-effort per channel; a dead channel never sinks the
   sweep), plus a manual ⟳ button. Dedupe by external message id. The agent
@@ -57,6 +67,7 @@ src/
   vcf.ts       — vCard 2.1/3.0/4.0 parser (pure)
   import.ts    — vcf → contacts import with dedupe
   agent.ts     — deterministic triage + nudge rules (pure)
+  jev.ts       — local Jev-style model: NB classify/score, online learning
   imap.ts      — IMAP client (shared with relay)
   smtp.ts      — SMTP send + Google Voice gateways (shared with relay)
   matrix.ts    — Matrix send/sync (shared with relay)
@@ -69,5 +80,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 29 tests — agent rules, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 36 tests — jev model, agent rules, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```

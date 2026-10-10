@@ -77,7 +77,24 @@ export function openDb(path?: string): Database {
       created_at TEXT NOT NULL, snoozed_until INTEGER NOT NULL DEFAULT 0,
       dismissed INTEGER NOT NULL DEFAULT 0
     );
+    -- jev-style local decision model: online naive bayes counts
+    CREATE TABLE IF NOT EXISTS jev_feat (
+      feature TEXT NOT NULL, class TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (feature, class)
+    );
+    CREATE TABLE IF NOT EXISTS jev_cls (
+      class TEXT PRIMARY KEY, docs INTEGER NOT NULL DEFAULT 0, feats INTEGER NOT NULL DEFAULT 0
+    );
+    -- per nudge-kind outcomes: what the user acted on vs dismissed
+    CREATE TABLE IF NOT EXISTS jev_nudge_fb (
+      kind TEXT PRIMARY KEY, acted INTEGER NOT NULL DEFAULT 0, dismissed INTEGER NOT NULL DEFAULT 0
+    );
   `);
+  // Migration: triage confidence/source/evidence (older DBs lack the columns).
+  const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
+  for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
+    if (!triCols.some((c) => c.name === col)) db.exec(`ALTER TABLE triage ADD COLUMN ${col} ${def}`);
+  }
   return db;
 }
 
@@ -173,7 +190,7 @@ export function conversationFor(contactId: string): Conversation {
 export interface ConversationRow extends Conversation {
   contact_name: string; contact_starred: number;
   last_body: string; last_channel: string; last_direction: string; unread: number;
-  category: TriageCategory;
+  category: TriageCategory; last_email_msg: string | null;
 }
 export function listConversations(): ConversationRow[] {
   return getDb().query(`
@@ -183,7 +200,8 @@ export function listConversations(): ConversationRow[] {
       (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_direction,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' AND m.read = 0) AS unread,
       COALESCE((SELECT t.category FROM messages m LEFT JOIN triage t ON t.message_id = m.id
-        WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1), 'personal') AS category
+        WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1), 'personal') AS category,
+      (SELECT m.id FROM messages m WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1) AS last_email_msg
     FROM conversations c JOIN contacts ct ON ct.id = c.contact_id
     WHERE c.archived = 0 AND ct.archived = 0
     ORDER BY ct.starred DESC, COALESCE(NULLIF(c.last_at, ''), c.created_at) DESC
@@ -264,14 +282,17 @@ export function dismissUnknown(id: string): void {
 // ---------- triage: deterministic email classification ----------
 export type TriageCategory = "personal" | "newsletter" | "receipt" | "automated";
 
-export function setTriage(messageId: string, category: TriageCategory, reason: string): void {
+export function setTriage(messageId: string, category: TriageCategory, reason: string, confidence = 0, source = "rules", evidence = ""): void {
   getDb().query(
-    "INSERT INTO triage(message_id, category, reason, created_at) VALUES(?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET category = excluded.category, reason = excluded.reason"
-  ).run(messageId, category, reason, nowIso());
+    "INSERT INTO triage(message_id, category, reason, created_at, confidence, source, evidence) VALUES(?,?,?,?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET category = excluded.category, reason = excluded.reason, confidence = excluded.confidence, source = excluded.source, evidence = excluded.evidence"
+  ).run(messageId, category, reason, nowIso(), confidence, source, evidence);
 }
 export function getTriage(messageId: string): TriageCategory | null {
   const r = getDb().query("SELECT category FROM triage WHERE message_id = ?").get(messageId) as { category: string } | null;
   return (r?.category as TriageCategory) || null;
+}
+export function getTriageFull(messageId: string): { category: string; reason: string; confidence: number; source: string; evidence: string } | null {
+  return (getDb().query("SELECT category, reason, confidence, source, evidence FROM triage WHERE message_id = ?").get(messageId) as any) || null;
 }
 export function untriagedEmail(limit = 200): Array<{ id: string; from_email: string; subject: string; body: string }> {
   return getDb().query(`
@@ -290,7 +311,7 @@ export interface Nudge {
   id: string; kind: string; dedupe: string; conversation_id: string; contact_id: string;
   message_id: string; title: string; detail: string; created_at: string;
   snoozed_until: number; dismissed: number;
-  contact_name?: string;
+  contact_name?: string; contact_starred?: number;
 }
 export function upsertNudge(n: {
   kind: string; dedupe: string; conversation_id?: string; contact_id?: string;
@@ -314,7 +335,7 @@ export function upsertNudge(n: {
 }
 export function listActiveNudges(nowMs = Date.now()): Nudge[] {
   return getDb().query(`
-    SELECT n.*, ct.name AS contact_name FROM nudges n
+    SELECT n.*, ct.name AS contact_name, COALESCE(ct.starred, 0) AS contact_starred FROM nudges n
     LEFT JOIN contacts ct ON ct.id = n.contact_id
     WHERE n.dismissed = 0 AND n.snoozed_until < ?
     ORDER BY n.created_at DESC

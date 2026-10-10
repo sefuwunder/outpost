@@ -5,6 +5,7 @@ import {
   getDb, setTriage, untriagedEmail, upsertNudge, pruneNudges, listActiveNudges,
   listUnknown, type TriageCategory,
 } from "./db";
+import { ensureSeeded, classify, modelTrusted, type JevClass } from "./jev";
 
 export interface Classification { category: TriageCategory; reason: string }
 
@@ -38,10 +39,23 @@ export interface AgentReport { triaged: number; nudges: number; pruned: number }
  * Idempotent — rerunning changes nothing unless the underlying state changed.
  */
 export function runAgent(nowMs = Date.now()): AgentReport {
+  ensureSeeded();
   let triaged = 0;
   for (const m of untriagedEmail()) {
-    const c = classifyEmail({ from: m.from_email, subject: m.subject, body: m.body });
-    setTriage(m.id, c.category, c.reason);
+    const input = { from: m.from_email, subject: m.subject, body: m.body };
+    // Fuzzy first: trust the learned model once it has seen enough evidence;
+    // the deterministic rules stay the day-one fallback.
+    if (modelTrusted(input)) {
+      const j = classify(input);
+      setTriage(
+        m.id, j.label as TriageCategory,
+        `model ${(j.confidence * 100).toFixed(0)}% — ${j.evidence.slice(0, 3).map((e) => `${e.feature} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}`,
+        j.confidence, "model", JSON.stringify(j.evidence.slice(0, 6))
+      );
+    } else {
+      const c = classifyEmail({ from: m.from_email, subject: m.subject, body: m.body });
+      setTriage(m.id, c.category, c.reason, 0, "rules", "");
+    }
     triaged++;
   }
 
