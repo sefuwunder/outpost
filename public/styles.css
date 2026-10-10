@@ -96,6 +96,35 @@ body {
 }
 .empty { text-align: center; color: var(--muted); padding: 60px 30px; font-size: 15px; line-height: 1.6; }
 
+/* filter chips */
+.chips { display: flex; gap: 8px; padding: 2px 16px 10px; overflow-x: auto; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chips button {
+  flex-shrink: 0; border: none; background: var(--field); color: var(--ink);
+  border-radius: 999px; padding: 7px 14px; font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.chips button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* nudge badge + cards */
+.nbadge {
+  position: absolute; top: 2px; right: 2px; background: #ff3b30; color: #fff;
+  font-size: 11px; font-weight: 700; min-width: 18px; height: 18px; border-radius: 999px;
+  display: grid; place-items: center; padding: 0 5px;
+}
+.nudge-card {
+  background: var(--bg); border: 0.5px solid var(--hairline); border-radius: 16px;
+  padding: 14px 16px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.nudge-card .kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); }
+.nudge-card h3 { margin: 4px 0; font-size: 17px; }
+.nudge-card p { margin: 0 0 10px; font-size: 14px; color: var(--muted); }
+.nudge-card .acts { display: flex; gap: 18px; }
+.nudge-card button { background: none; border: none; color: var(--accent); font-size: 15px; cursor: pointer; padding: 4px 0; }
+.nudge-card button.dim { color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .nudge-card { background: var(--bg-grouped); }
+}
+
 /* unknown senders — iMessage "unknown sender" banner */
 #unknown-strip { padding: 4px 16px 0; }
 .unk-head { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin: 6px 0; }

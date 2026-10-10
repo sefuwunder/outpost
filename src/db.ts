@@ -66,6 +66,17 @@ export function openDb(path?: string): Database {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS triage (
+      message_id TEXT PRIMARY KEY, category TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS nudges (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, dedupe TEXT NOT NULL UNIQUE,
+      conversation_id TEXT NOT NULL DEFAULT '', contact_id TEXT NOT NULL DEFAULT '',
+      message_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, snoozed_until INTEGER NOT NULL DEFAULT 0,
+      dismissed INTEGER NOT NULL DEFAULT 0
+    );
   `);
   return db;
 }
@@ -162,6 +173,7 @@ export function conversationFor(contactId: string): Conversation {
 export interface ConversationRow extends Conversation {
   contact_name: string; contact_starred: number;
   last_body: string; last_channel: string; last_direction: string; unread: number;
+  category: TriageCategory;
 }
 export function listConversations(): ConversationRow[] {
   return getDb().query(`
@@ -169,7 +181,9 @@ export function listConversations(): ConversationRow[] {
       (SELECT body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_body,
       (SELECT channel FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_channel,
       (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_direction,
-      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' AND m.read = 0) AS unread
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' AND m.read = 0) AS unread,
+      COALESCE((SELECT t.category FROM messages m LEFT JOIN triage t ON t.message_id = m.id
+        WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1), 'personal') AS category
     FROM conversations c JOIN contacts ct ON ct.id = c.contact_id
     WHERE c.archived = 0 AND ct.archived = 0
     ORDER BY ct.starred DESC, COALESCE(NULLIF(c.last_at, ''), c.created_at) DESC
@@ -245,6 +259,80 @@ export function promoteUnknown(id: string, name: string): Contact | null {
 }
 export function dismissUnknown(id: string): void {
   getDb().query("DELETE FROM unknown_senders WHERE id = ?").run(id);
+}
+
+// ---------- triage: deterministic email classification ----------
+export type TriageCategory = "personal" | "newsletter" | "receipt" | "automated";
+
+export function setTriage(messageId: string, category: TriageCategory, reason: string): void {
+  getDb().query(
+    "INSERT INTO triage(message_id, category, reason, created_at) VALUES(?,?,?,?) ON CONFLICT(message_id) DO UPDATE SET category = excluded.category, reason = excluded.reason"
+  ).run(messageId, category, reason, nowIso());
+}
+export function getTriage(messageId: string): TriageCategory | null {
+  const r = getDb().query("SELECT category FROM triage WHERE message_id = ?").get(messageId) as { category: string } | null;
+  return (r?.category as TriageCategory) || null;
+}
+export function untriagedEmail(limit = 200): Array<{ id: string; from_email: string; subject: string; body: string }> {
+  return getDb().query(`
+    SELECT m.id, ct.email AS from_email, m.subject, m.body
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN contacts ct ON ct.id = c.contact_id
+    LEFT JOIN triage t ON t.message_id = m.id
+    WHERE m.channel = 'email' AND m.direction = 'in' AND t.message_id IS NULL
+    ORDER BY m.created_at ASC LIMIT ?
+  `).all(limit) as Array<{ id: string; from_email: string; subject: string; body: string }>;
+}
+
+// ---------- nudges ----------
+export interface Nudge {
+  id: string; kind: string; dedupe: string; conversation_id: string; contact_id: string;
+  message_id: string; title: string; detail: string; created_at: string;
+  snoozed_until: number; dismissed: number;
+  contact_name?: string;
+}
+export function upsertNudge(n: {
+  kind: string; dedupe: string; conversation_id?: string; contact_id?: string;
+  message_id?: string; title: string; detail?: string;
+}): Nudge {
+  const d = getDb();
+  let row = d.query("SELECT * FROM nudges WHERE dedupe = ?").get(n.dedupe) as Nudge | null;
+  if (row) {
+    // re-arm a dismissed/snoozed nudge only if it was fully resolved before — otherwise leave it
+    return row;
+  }
+  row = {
+    id: uid(), kind: n.kind, dedupe: n.dedupe,
+    conversation_id: n.conversation_id || "", contact_id: n.contact_id || "",
+    message_id: n.message_id || "", title: n.title, detail: n.detail || "",
+    created_at: nowIso(), snoozed_until: 0, dismissed: 0,
+  };
+  d.query("INSERT INTO nudges(id, kind, dedupe, conversation_id, contact_id, message_id, title, detail, created_at, snoozed_until, dismissed) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run(row.id, row.kind, row.dedupe, row.conversation_id, row.contact_id, row.message_id, row.title, row.detail, row.created_at, 0, 0);
+  return row;
+}
+export function listActiveNudges(nowMs = Date.now()): Nudge[] {
+  return getDb().query(`
+    SELECT n.*, ct.name AS contact_name FROM nudges n
+    LEFT JOIN contacts ct ON ct.id = n.contact_id
+    WHERE n.dismissed = 0 AND n.snoozed_until < ?
+    ORDER BY n.created_at DESC
+  `).all(nowMs) as Nudge[];
+}
+export function dismissNudge(id: string): void {
+  getDb().query("UPDATE nudges SET dismissed = 1 WHERE id = ?").run(id);
+}
+export function snoozeNudge(id: string, untilMs: number): void {
+  getDb().query("UPDATE nudges SET snoozed_until = ? WHERE id = ?").run(untilMs, id);
+}
+/** Drop nudges whose conversation/contact no longer needs them (replied, archived…). */
+export function pruneNudges(validDedupes: Set<string>): number {
+  const d = getDb();
+  const rows = d.query("SELECT id, dedupe FROM nudges WHERE dismissed = 0").all() as Array<{ id: string; dedupe: string }>;
+  let n = 0;
+  for (const r of rows) if (!validDedupes.has(r.dedupe)) { d.query("DELETE FROM nudges WHERE id = ?").run(r.id); n++; }
+  return n;
 }
 
 /** Destructive: wipe every contact, conversation, message, and unknown sender.

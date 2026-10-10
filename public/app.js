@@ -9,7 +9,15 @@ const api = async (path, opts = {}) => {
 
 const CHAN_LABEL = { email: "Email", sms: "SMS", matrix: "Matrix" };
 const CHAN_PH = { email: "Email", sms: "Text Message", matrix: "Matrix message" };
-const state = { view: "list", convs: [], thread: null, channel: null, editing: null, q: "" };
+const CHIPS = [
+  { id: "all", label: "All" },
+  { id: "needs_reply", label: "Needs reply" },
+  { id: "personal", label: "Personal" },
+  { id: "newsletter", label: "Newsletters" },
+  { id: "receipt", label: "Receipts" },
+  { id: "automated", label: "Automated" },
+];
+const state = { view: "list", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [] };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const initials = (n) => n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?";
@@ -32,7 +40,7 @@ const sameDay = (a, b) => fmtDay(a) === fmtDay(b);
 
 function show(view) {
   state.view = view;
-  for (const v of ["list", "thread", "form", "settings"]) $("view-" + v).hidden = v !== view;
+  for (const v of ["list", "thread", "form", "settings", "nudges"]) $("view-" + v).hidden = v !== view;
   $("topbar").style.display = view === "list" ? "" : "none";
 }
 
@@ -42,24 +50,40 @@ async function loadConversations() {
   renderList();
 }
 
+function renderChips() {
+  $("chips").innerHTML = CHIPS.map((c) =>
+    `<button data-chip="${c.id}" class="${c.id === state.chip ? "on" : ""}">${c.label}</button>`).join("");
+  $("chips").querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => { state.chip = b.dataset.chip; renderChips(); renderList(); }));
+}
+
 function renderList() {
+  renderChips();
   const q = state.q.trim().toLowerCase();
+  const needReply = new Set(state.nudges.filter((n) => n.kind === "reply_needed").map((n) => n.conversation_id));
   const list = $("conv-list");
-  const rows = state.convs.filter((c) =>
-    !q || c.contact_name.toLowerCase().includes(q) || (c.last_body || "").toLowerCase().includes(q));
+  const rows = state.convs.filter((c) => {
+    if (q && !(c.contact_name.toLowerCase().includes(q) || (c.last_body || "").toLowerCase().includes(q))) return false;
+    if (state.chip === "needs_reply") return needReply.has(c.id);
+    if (state.chip !== "all") return (c.category || "personal") === state.chip;
+    return true;
+  });
   if (!rows.length) {
-    list.innerHTML = `<div class="empty">No conversations yet.<br>Tap ＋ to add someone from outside the 8.</div>`;
+    list.innerHTML = `<div class="empty">${state.chip === "all" ? "No conversations yet.<br>Tap ＋ to add someone from outside the 8." : "Nothing here."}</div>`;
     return;
   }
-  list.innerHTML = rows.map((c) => `
+  list.innerHTML = rows.map((c) => {
+    const cat = (c.category || "personal") !== "personal" ? `<span class="chanpill">${c.category}</span>` : "";
+    return `
     <div class="conv${c.unread ? " unread" : ""}" data-id="${c.id}">
       <div class="dot"><i></i></div>
       <div class="avatar" style="${avatarStyle(c.contact_name)}">${esc(initials(c.contact_name))}</div>
       <div class="meta">
-        <div class="row1"><h3>${esc(c.contact_name)}</h3><time>${fmtTime(c.last_at)}</time></div>
-        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
+        <div class="row1"><h3>${esc(c.contact_name)}</h3>${needReply.has(c.id) ? '<span style="color:var(--accent);font-size:13px;font-weight:700">needs reply</span>' : ""}<time>${fmtTime(c.last_at)}</time></div>
+        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${cat}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   list.querySelectorAll(".conv").forEach((el) =>
     el.addEventListener("click", () => openThread(el.dataset.id)));
 }
@@ -181,6 +205,41 @@ $("btn-poll").addEventListener("click", async () => {
   finally { setTimeout(() => b.style.transform = "", 400); }
 });
 
+// ---------- nudges ----------
+const KIND_LABEL = { reply_needed: "Reply", follow_up: "Follow up", unknown_waiting: "New sender" };
+
+async function loadNudges() {
+  const { nudges } = await api("/api/nudges");
+  state.nudges = nudges;
+  const badge = $("nudge-badge");
+  badge.hidden = !nudges.length;
+  badge.textContent = nudges.length > 9 ? "9+" : nudges.length;
+  if (state.view === "list") renderList(); // refresh "needs reply" markers
+  $("nudge-list").innerHTML = nudges.map((n) => `
+    <div class="nudge-card" data-id="${n.id}">
+      <div class="kind">${KIND_LABEL[n.kind] || n.kind}</div>
+      <h3>${esc(n.title)}</h3>
+      <p>${esc(n.detail)}</p>
+      <div class="acts">
+        ${n.conversation_id ? `<button data-act="open">Open thread</button>` : ""}
+        <button data-act="snooze">Snooze 3d</button>
+        <button class="dim" data-act="dismiss">Dismiss</button>
+      </div>
+    </div>`).join("") || `<div class="empty">All clear — nothing needs your attention.</div>`;
+  $("nudge-list").querySelectorAll(".nudge-card").forEach((card) => {
+    card.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
+      const id = card.dataset.id;
+      const n = state.nudges.find((x) => x.id === id);
+      if (b.dataset.act === "open" && n?.conversation_id) { openThread(n.conversation_id); return; }
+      if (b.dataset.act === "snooze") await api(`/api/nudges/${id}/snooze`, { method: "POST", body: JSON.stringify({ days: 3 }) });
+      else await api(`/api/nudges/${id}/dismiss`, { method: "POST" });
+      await refresh();
+    }));
+  });
+}
+$("btn-nudges").addEventListener("click", () => { show("nudges"); loadNudges(); });
+$("btn-nudges-back").addEventListener("click", () => { show("list"); refresh(); });
+
 // ---------- contacts ----------
 $("btn-contacts").addEventListener("click", async () => {
   const { contacts } = await api("/api/contacts");
@@ -292,8 +351,10 @@ document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("clic
 
 async function refresh() {
   if (state.view === "contacts") { $("btn-contacts").click(); return; }
+  if (state.view === "nudges") { loadNudges(); return; }
   await loadConversations();
   await loadUnknown();
+  await loadNudges();
 }
 setInterval(() => { if (state.view === "list") refresh(); }, 30_000);
 setInterval(() => { if (state.view === "thread" && state.thread) openThread(state.thread.conversation.id); }, 15_000);

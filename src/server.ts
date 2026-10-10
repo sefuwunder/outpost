@@ -2,6 +2,7 @@
 import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listConversations, conversationFor, listMessages, markRead, totalUnread,
   listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
+  listActiveNudges, dismissNudge, snoozeNudge,
   getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
 
@@ -29,7 +30,9 @@ async function sweep() {
   polling = true;
   try {
     const report = await pollInbox(realTransports());
-    lastPoll = { at: new Date().toISOString(), report };
+    const { runAgent } = await import("./agent");
+    const agent = runAgent();
+    lastPoll = { at: new Date().toISOString(), report: { ...report, ...agent } };
   } catch (e: any) {
     lastPoll = { at: new Date().toISOString(), report: { error: String(e?.message || e).slice(0, 200) } };
   } finally {
@@ -161,6 +164,22 @@ Bun.serve({
       if (p === "/api/poll" && req.method === "POST") {
         await sweep();
         return json({ ok: true, lastPoll });
+      }
+      if (p === "/api/agent/run" && req.method === "POST") {
+        const { runAgent } = await import("./agent");
+        return json({ ok: true, ...runAgent() });
+      }
+      if (p === "/api/nudges" && req.method === "GET") {
+        return json({ nudges: listActiveNudges() });
+      }
+      m = p.match(/^\/api\/nudges\/([\w-]+)\/dismiss$/);
+      if (m && req.method === "POST") { dismissNudge(m[1]); return json({ ok: true }); }
+      m = p.match(/^\/api\/nudges\/([\w-]+)\/snooze$/);
+      if (m && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as { days?: number };
+        const days = Math.min(30, Math.max(1, Number(b.days) || 3));
+        snoozeNudge(m[1], Date.now() + days * 86400_000);
+        return json({ ok: true });
       }
 
       // static

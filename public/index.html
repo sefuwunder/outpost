@@ -13,6 +13,7 @@
   <div class="row">
     <button id="btn-poll" class="navbtn icon" title="Check for new messages">⟳</button>
     <div class="navtitle"><h1></h1></div>
+    <button id="btn-nudges" class="navbtn icon" title="Nudges" style="position:relative">🔔<span id="nudge-badge" class="nbadge" hidden></span></button>
     <button id="btn-contacts" class="navbtn icon" title="Contacts">👥</button>
     <button id="btn-settings" class="navbtn icon" title="Settings">⚙️</button>
   </div>
@@ -22,10 +23,22 @@
 <main id="view-list" class="view">
   <div class="narrow">
     <div class="searchrow"><input id="search" type="search" placeholder="Search" autocomplete="off"></div>
+    <div id="chips" class="chips"></div>
     <div id="unknown-strip" hidden></div>
     <div id="conv-list"></div>
   </div>
   <button id="btn-new-contact" class="fab" title="New contact">＋</button>
+</main>
+
+<main id="view-nudges" class="view" hidden>
+  <div class="navbar" style="padding-top: env(safe-area-inset-top)">
+    <div class="row">
+      <button id="btn-nudges-back" class="navbtn">‹ Outpost</button>
+      <div class="navtitle"><h1>Nudges</h1></div>
+      <div style="min-width:64px"></div>
+    </div>
+  </div>
+  <div class="narrow"><div id="nudge-list" style="padding:12px 16px 40px"></div></div>
 </main>
 
 <main id="view-thread" class="view" hidden>
