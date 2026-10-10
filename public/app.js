@@ -197,8 +197,17 @@ $("btn-contacts").addEventListener("click", async () => {
       <div class="meta"><div class="row1"><h3>${esc(c.name)}</h3></div>
       <p>${esc([c.email, c.phone, c.matrix_id].filter(Boolean).join(" · "))}</p></div>
     </div>`).join("") || `<div class="empty">No contacts yet — tap ＋ to add one.</div>`;
+  list.insertAdjacentHTML("beforeend",
+    `<div style="padding:24px 16px 40px;text-align:center"><button id="btn-clear-contacts" class="destruct">Clear All Contacts</button></div>`);
   $("btn-import-vcf").addEventListener("click", () => $("vcf-file").click());
   $("vcf-file").addEventListener("change", importVcfFile);
+  $("btn-clear-contacts").addEventListener("click", async () => {
+    if (!confirm("Delete ALL contacts, conversations, and messages? This can't be undone.")) return;
+    if (!confirm("Last chance — really wipe everything? Your channel settings will be kept.")) return;
+    const r = await api("/api/contacts/clear", { method: "POST" });
+    alert(`Cleared ${r.cleared.contacts} contacts, ${r.cleared.messages} messages.`);
+    $("btn-contacts").click();
+  });
   list.querySelectorAll(".conv").forEach((el) =>
     el.addEventListener("click", async () => {
       const { contacts: cs } = await api("/api/contacts");

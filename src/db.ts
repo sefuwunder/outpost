@@ -246,3 +246,18 @@ export function promoteUnknown(id: string, name: string): Contact | null {
 export function dismissUnknown(id: string): void {
   getDb().query("DELETE FROM unknown_senders WHERE id = ?").run(id);
 }
+
+/** Destructive: wipe every contact, conversation, message, and unknown sender.
+ *  Channel settings (credentials etc.) are kept; per-contact matrix room
+ *  mappings are dropped as orphans. */
+export function clearAllContacts(): { contacts: number; conversations: number; messages: number; unknown: number } {
+  const d = getDb();
+  const count = (t: string) => (d.query(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+  const cleared = {
+    contacts: count("contacts"), conversations: count("conversations"),
+    messages: count("messages"), unknown: count("unknown_senders"),
+  };
+  d.exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders;");
+  d.exec("DELETE FROM settings WHERE key LIKE 'matrix_room:%'");
+  return cleared;
+}

@@ -77,3 +77,22 @@ test("settings round-trip, secrets never enumerated publicly", () => {
   expect(db.publicSettings().email_configured).toBe(true);
   expect(JSON.stringify(db.publicSettings())).not.toContain("s3cret");
 });
+
+test("clearAllContacts wipes people and threads but keeps channel settings", () => {
+  const c = db.createContact({ name: "Zed", email: "z@x.com" });
+  const conv = db.conversationFor(c.id);
+  db.addMessage({ conversation_id: conv.id, channel: "email", direction: "in", body: "hi" });
+  db.upsertUnknown("email", "u@x.com", "", "yo", new Date().toISOString());
+  db.setSetting("imap_host", "mail.x.com");
+  db.setSetting("matrix_room:" + c.id, "!room:x");
+  const r = db.clearAllContacts();
+  expect(r.contacts).toBe(1);
+  expect(r.messages).toBe(1);
+  expect(r.unknown).toBe(1);
+  expect(db.listContacts()).toEqual([]);
+  expect(db.listConversations()).toEqual([]);
+  expect(db.totalUnread()).toBe(0);
+  expect(db.listUnknown()).toEqual([]);
+  expect(db.getSetting("imap_host")).toBe("mail.x.com"); // channel config kept
+  expect(db.getSetting("matrix_room:" + c.id)).toBe(""); // orphan mapping dropped
+});

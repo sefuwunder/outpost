@@ -1,8 +1,8 @@
 // outpost — conversation-view comms for the outer ring. Bun + zero deps + SQLite.
 import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listConversations, conversationFor, listMessages, markRead, totalUnread,
-  listUnknown, promoteUnknown, dismissUnknown, getSetting, setSetting,
-  publicSettings } from "./db";
+  listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
+  getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
 
 const PORT = Number(process.env.PORT || 3029);
@@ -88,6 +88,9 @@ Bun.serve({
         if (!b.vcf || typeof b.vcf !== "string" || b.vcf.length > 5_000_000) return bad("no vcf data");
         const { importContactsFromVcf } = await import("./import");
         return json(importContactsFromVcf(b.vcf));
+      }
+      if (p === "/api/contacts/clear" && req.method === "POST") {
+        return json({ ok: true, cleared: clearAllContacts() });
       }
       m = p.match(/^\/api\/contacts\/([\w-]+)$/);
       if (m && req.method === "PUT") {

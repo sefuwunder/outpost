@@ -31,7 +31,9 @@ browser — the settings API only returns booleans and non-secret fields.
   forwards, like Relay), Matrix ID + DM room. Import a whole address book from
   a `.vcf` file (👥 → Import from vCard): vCard 2.1/3.0/4.0, folded lines,
   quoted-printable, FN/N fallback, PREF email/phone preference, dedupe by
-  email/phone with an imported/skipped report.
+  email/phone with an imported/skipped report. A red **Clear All Contacts** button
+  at the bottom of the roster wipes every contact, conversation, message, and
+  unknown sender (double-confirmed; channel settings are kept).
 - **Inbound poll** — IMAP UNSEEN sweep + Google Voice SMS harvest + Matrix
   `/sync` every 60s (best-effort per channel; a dead channel never sinks the
   sweep), plus a manual ⟳ button. Dedupe by external message id.
@@ -57,5 +59,5 @@ Data lives in `./data/` (gitignored).
 ## Tests
 
 ```bash
-bun test   # 20 tests — vcf parser, import dedupe, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 22 tests — vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```
