@@ -19,7 +19,7 @@ const SETTING_KEYS = new Set([
   "e2ee_url", "e2ee_token", "e2ee_handle",
   "llm_url", "llm_model", "llm_enabled", "llm_threshold",
 ]);
-const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "matrix_user_id"];
+const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_secure", "matrix_homeserver", "matrix_user_id", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_enabled", "llm_threshold"];
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
