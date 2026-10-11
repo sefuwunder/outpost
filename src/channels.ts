@@ -3,7 +3,8 @@
 
 import {
   getContact, conversationFor, addMessage, findContactByEmail, findContactByPhone,
-  findContactByMatrixId, upsertUnknown, upsertInbox, getSetting, setSetting,
+  findContactByMatrixId, findContactByE2EE, upsertUnknown, upsertInbox, getSetting, setSetting,
+  getE2EEState, setE2EEState, delE2EEState,
   type Channel, type Contact,
 } from "./db";
 import { extractEmail, type UnseenMail } from "./imap";
@@ -12,9 +13,11 @@ export interface Transports {
   sendEmail(to: string, subject: string, text: string): Promise<void>;
   sendSms(digits: string, text: string): Promise<void>;
   sendMatrix(contact: Contact, text: string): Promise<void>;
+  sendEncrypted(handle: string, text: string): Promise<void>;
   fetchEmail(): Promise<UnseenMail[]>;
   fetchSms(): Promise<Array<{ number: string; name: string; body: string; at: string; messageId: string }>>;
   fetchMatrix(): Promise<Array<{ sender: string; roomId: string; body: string; at: string; eventId: string }>>;
+  fetchEncrypted(): Promise<Array<{ handle: string; body: string; at: string; id: string }>>;
 }
 
 export type SendResult = { ok: true; messageId: string } | { ok: false; error: string };
@@ -25,7 +28,55 @@ export function availableChannels(c: Contact): Channel[] {
   if (c.email) out.push("email");
   if (c.phone) out.push("sms");
   if (c.matrix_id) out.push("matrix");
+  if (c.e2ee_handle) out.push("encrypted");
   return out;
+}
+
+// ---------- E2EE (outpost-e2ee relay) ----------
+
+type E2EEClientT = import("./e2ee/client").E2EEClient;
+
+let e2eeClient: E2EEClientT | null = null;
+let e2eeClientKey = "";
+
+function e2eeSettings(): { url: string; token: string; handle: string } {
+  return {
+    url: (getSetting("e2ee_url") || "http://127.0.0.1:3030").replace(/\/$/, ""),
+    token: getSetting("e2ee_token") || "",
+    handle: (getSetting("e2ee_handle") || "").toLowerCase().trim(),
+  };
+}
+
+/** The user's E2EE client, or null when not configured. Keys live in e2ee_state (never API-exposed). */
+export async function getE2EEClient(): Promise<E2EEClientT | null> {
+  const { url, token, handle } = e2eeSettings();
+  if (!handle) return null;
+  const key = `${url}|${handle}`;
+  if (!e2eeClient || e2eeClientKey !== key) {
+    const { E2EEClient } = require("./e2ee/client") as typeof import("./e2ee/client");
+    const store = {
+      get: (k: string) => getE2EEState(`e2ee:${handle}:${k}`),
+      set: (k: string, v: string) => setE2EEState(`e2ee:${handle}:${k}`, v),
+      del: (k: string) => delE2EEState(`e2ee:${handle}:${k}`),
+    };
+    e2eeClient = await E2EEClient.create(handle, token, url, store);
+    e2eeClientKey = key;
+  }
+  return e2eeClient;
+}
+
+/** Register (or re-register) our public keys. Idempotent. */
+export async function ensureE2EERegistered(): Promise<void> {
+  const c = await getE2EEClient();
+  if (!c) throw new Error("E2EE not configured — set handle, server URL and token in Settings");
+  await c.register();
+}
+
+/** Safety number for a peer's handle — read it to each other to verify. */
+export async function e2eeSafetyNumber(peerHandle: string): Promise<string> {
+  const c = await getE2EEClient();
+  if (!c) throw new Error("E2EE not configured");
+  return c.safetyNumber(peerHandle.toLowerCase().trim());
 }
 
 export async function sendToContact(t: Transports, contactId: string, channel: Channel, body: string): Promise<SendResult> {
@@ -40,6 +91,9 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
     } else if (channel === "sms") {
       if (!c.phone) return { ok: false, error: "no phone number" };
       await t.sendSms(c.phone, text);
+    } else if (channel === "encrypted") {
+      if (!c.e2ee_handle) return { ok: false, error: "no E2EE handle" };
+      await t.sendEncrypted(c.e2ee_handle, text);
     } else {
       if (!c.matrix_id) return { ok: false, error: "no matrix id" };
       await t.sendMatrix(c, text);
@@ -52,7 +106,7 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
   return { ok: true, messageId: m!.id };
 }
 
-export interface PollReport { email: number; sms: number; matrix: number; unknown: number }
+export interface PollReport { email: number; sms: number; matrix: number; encrypted: number; unknown: number }
 
 /** Ingest one inbound email: inbox row always, contact thread when known. */
 export function ingestEmail(m: UnseenMail, report: PollReport): void {
@@ -93,7 +147,7 @@ export async function backfillInbox(days = 30, limit = 200, secure = true): Prom
   const imap = require("./imap") as typeof import("./imap");
   if (!getSetting("imap_host") || !getSetting("imap_user"))
     throw new Error("email not configured — add it in ⚙️ Channels first");
-  const report: PollReport = { email: 0, sms: 0, matrix: 0, unknown: 0 };
+  const report: PollReport = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
   const cfg = {
     host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993),
     user: getSetting("imap_user"), pass: getSetting("imap_pass"), secure,
@@ -104,7 +158,7 @@ export async function backfillInbox(days = 30, limit = 200, secure = true): Prom
 
 /** One inbound sweep across every configured channel. Best-effort per channel. */
 export async function pollInbox(t: Transports): Promise<PollReport> {
-  const report: PollReport = { email: 0, sms: 0, matrix: 0, unknown: 0 };
+  const report: PollReport = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
 
   // --- email: UNSEEN only; the backfill covers already-read mail ---
   try {
@@ -145,6 +199,26 @@ export async function pollInbox(t: Transports): Promise<PollReport> {
         if (added) report.matrix++;
       } else if (m.sender) {
         upsertUnknown("matrix", m.sender, "", m.body, at);
+        report.unknown++;
+      }
+    }
+  } catch { /* channel down */ }
+
+  // --- encrypted: E2EE via the outpost-e2ee relay; bodies already decrypted ---
+  try {
+    for (const m of await t.fetchEncrypted()) {
+      const c = findContactByE2EE(m.handle);
+      const at = m.at;
+      if (c) {
+        const conv = conversationFor(c.id);
+        const added = addMessage({
+          conversation_id: conv.id, channel: "encrypted", direction: "in", body: m.body,
+          external_id: m.id ? `e2ee:${m.id}` : "",
+          created_at: at,
+        });
+        if (added) report.encrypted++;
+      } else if (m.handle) {
+        upsertUnknown("encrypted", m.handle, "", m.body, at);
         report.unknown++;
       }
     }
@@ -202,6 +276,11 @@ export function realTransports(): Transports {
       if (!roomId) throw new Error("no matrix room set for this contact — add it in the contact editor");
       await matrix.matrixSend(matrixCfg(), roomId, text);
     },
+    sendEncrypted: async (handle, text) => {
+      await ensureE2EERegistered();
+      const c = await getE2EEClient();
+      await c!.send(handle, text);
+    },
     fetchEmail: async () => {
       if (!getSetting("imap_host") || !getSetting("imap_user")) return [];
       return imap.fetchUnseen(imapCfg(), 50, "INBOX", 4000);
@@ -225,6 +304,16 @@ export function realTransports(): Transports {
         sender: m.sender, roomId: m.roomId, body: m.body,
         at: new Date(m.ts).toISOString(), eventId: m.eventId,
       }));
+    },
+    fetchEncrypted: async () => {
+      const c = await getE2EEClient();
+      if (!c) return [];
+      await ensureE2EERegistered();
+      const msgs = await c.poll();
+      // Undecryptable envelopes are acked but never stored as messages.
+      return msgs
+        .filter((m) => !m.text.startsWith("⚠"))
+        .map((m) => ({ handle: m.from, body: m.text, at: m.at || new Date().toISOString(), id: m.id }));
     },
   };
 }

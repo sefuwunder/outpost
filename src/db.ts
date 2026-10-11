@@ -9,12 +9,13 @@ let db: Database;
 
 export interface Contact {
   id: string; name: string; email: string; phone: string; matrix_id: string;
+  e2ee_handle: string;
   notes: string; starred: number; archived: number; created_at: string;
 }
 export interface Conversation {
   id: string; contact_id: string; archived: number; created_at: string; last_at: string;
 }
-export type Channel = "email" | "sms" | "matrix";
+export type Channel = "email" | "sms" | "matrix" | "encrypted";
 export interface Message {
   id: string; conversation_id: string; channel: Channel; direction: "in" | "out";
   body: string; subject: string; external_id: string; created_at: string; read: number;
@@ -38,6 +39,7 @@ export function openDb(path?: string): Database {
     CREATE TABLE IF NOT EXISTS contacts (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
       phone TEXT NOT NULL DEFAULT '', matrix_id TEXT NOT NULL DEFAULT '',
+      e2ee_handle TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '', starred INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
@@ -102,7 +104,16 @@ export function openDb(path?: string): Database {
       category TEXT NOT NULL, created_at TEXT NOT NULL,
       UNIQUE(scope, pattern)
     );
+    -- E2EE client state: private keys + sessions. Never exposed via the API.
+    CREATE TABLE IF NOT EXISTS e2ee_state (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
+    );
   `);
+  // Migration: contacts.e2ee_handle (older DBs lack the column).
+  const contactCols = db.query("PRAGMA table_info(contacts)").all() as { name: string }[];
+  if (!contactCols.some((c) => c.name === "e2ee_handle")) {
+    db.exec("ALTER TABLE contacts ADD COLUMN e2ee_handle TEXT NOT NULL DEFAULT ''");
+  }
   // Migration: triage confidence/source/evidence (older DBs lack the columns).
   const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
   for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
@@ -149,6 +160,7 @@ export function publicSettings(): Record<string, boolean> {
     email_configured: !!(getSetting("imap_host") && getSetting("imap_user")),
     sms_configured: !!(getSetting("smtp_host") && getSetting("imap_host")),
     matrix_configured: !!(getSetting("matrix_homeserver") && getSetting("matrix_token")),
+    e2ee_configured: !!((getSetting("e2ee_url") || getSetting("e2ee_token")) && getSetting("e2ee_handle")),
   };
 }
 
@@ -179,19 +191,20 @@ export function findContactByMatrixId(mid: string): Contact | null {
   if (!m) return null;
   return (getDb().query("SELECT * FROM contacts WHERE lower(matrix_id) = ? AND archived = 0").get(m) as Contact) || null;
 }
-export function createContact(c: { name: string; email?: string; phone?: string; matrix_id?: string; notes?: string }): Contact {
+export function createContact(c: { name: string; email?: string; phone?: string; matrix_id?: string; e2ee_handle?: string; notes?: string }): Contact {
   const id = uid();
   const row: Contact = {
     id, name: c.name.trim() || "Unnamed", email: normEmail(c.email || ""),
     phone: normPhone(c.phone || ""), matrix_id: (c.matrix_id || "").trim(),
+    e2ee_handle: (c.e2ee_handle || "").toLowerCase().trim(),
     notes: c.notes || "", starred: 0, archived: 0, created_at: nowIso(),
   };
   getDb().query(
-    "INSERT INTO contacts(id, name, email, phone, matrix_id, notes, starred, archived, created_at) VALUES(?,?,?,?,?,?,?,?,?)"
-  ).run(row.id, row.name, row.email, row.phone, row.matrix_id, row.notes, 0, 0, row.created_at);
+    "INSERT INTO contacts(id, name, email, phone, matrix_id, e2ee_handle, notes, starred, archived, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)"
+  ).run(row.id, row.name, row.email, row.phone, row.matrix_id, row.e2ee_handle, row.notes, 0, 0, row.created_at);
   return row;
 }
-export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | "email" | "phone" | "matrix_id" | "notes" | "starred" | "archived">>): Contact | null {
+export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | "email" | "phone" | "matrix_id" | "e2ee_handle" | "notes" | "starred" | "archived">>): Contact | null {
   const cur = getContact(id);
   if (!cur) return null;
   const next = {
@@ -199,13 +212,33 @@ export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | 
     email: patch.email != null ? normEmail(patch.email) : cur.email,
     phone: patch.phone != null ? normPhone(patch.phone) : cur.phone,
     matrix_id: patch.matrix_id != null ? patch.matrix_id.trim() : cur.matrix_id,
+    e2ee_handle: patch.e2ee_handle != null ? patch.e2ee_handle.toLowerCase().trim() : cur.e2ee_handle,
     notes: patch.notes ?? cur.notes,
     starred: patch.starred ?? cur.starred,
     archived: patch.archived ?? cur.archived,
   };
-  getDb().query("UPDATE contacts SET name=?, email=?, phone=?, matrix_id=?, notes=?, starred=?, archived=? WHERE id=?")
-    .run(next.name, next.email, next.phone, next.matrix_id, next.notes, next.starred, next.archived, id);
+  getDb().query("UPDATE contacts SET name=?, email=?, phone=?, matrix_id=?, e2ee_handle=?, notes=?, starred=?, archived=? WHERE id=?")
+    .run(next.name, next.email, next.phone, next.matrix_id, next.e2ee_handle, next.notes, next.starred, next.archived, id);
   return getContact(id);
+}
+
+/** Find a contact by their E2EE handle (case-insensitive). */
+export function findContactByE2EE(handle: string): Contact | null {
+  const h = (handle || "").toLowerCase().trim();
+  if (!h) return null;
+  return (getDb().query("SELECT * FROM contacts WHERE lower(e2ee_handle) = ? AND archived = 0").get(h) as Contact) || null;
+}
+
+/** Private KV store for the E2EE client's keys/sessions. Never API-exposed. */
+export function getE2EEState(key: string): string | null {
+  const r = getDb().query("SELECT value FROM e2ee_state WHERE key = ?").get(key) as { value: string } | null;
+  return r ? r.value : null;
+}
+export function setE2EEState(key: string, value: string): void {
+  getDb().query("INSERT INTO e2ee_state(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
+export function delE2EEState(key: string): void {
+  getDb().query("DELETE FROM e2ee_state WHERE key = ?").run(key);
 }
 
 // ---------- conversations (one per contact — the unified thread) ----------

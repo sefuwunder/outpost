@@ -7,8 +7,8 @@ const api = async (path, opts = {}) => {
   return j;
 };
 
-const CHAN_LABEL = { email: "Email", sms: "SMS", matrix: "Matrix" };
-const CHAN_PH = { email: "Email", sms: "Text Message", matrix: "Matrix message" };
+const CHAN_LABEL = { email: "Email", sms: "SMS", matrix: "Matrix", encrypted: "🔒 Encrypted" };
+const CHAN_PH = { email: "Email", sms: "Text Message", matrix: "Matrix message", encrypted: "Encrypted message" };
 const CHIPS = [
   { id: "all", label: "All" },
   { id: "needs_reply", label: "Needs reply" },
@@ -163,6 +163,7 @@ function buildChanTabs() {
   if (c.email) avail.push("email");
   if (c.phone) avail.push("sms");
   if (c.matrix_id) avail.push("matrix");
+  if (c.e2ee_handle) avail.push("encrypted");
   if (!avail.includes(state.channel)) state.channel = avail[0] || null;
   const tabs = $("chan-tabs");
   tabs.hidden = avail.length < 2;
@@ -233,6 +234,9 @@ function pollSummary(rep) {
   const parts = [];
   const n = (rep.email || 0) + (rep.unknown || 0);
   if (n) parts.push(n + (n === 1 ? " new email" : " new emails"));
+  if (rep.encrypted) parts.push(rep.encrypted + (rep.encrypted === 1 ? " encrypted message" : " encrypted messages"));
+  if (rep.sms) parts.push(rep.sms + " SMS");
+  if (rep.matrix) parts.push(rep.matrix + " Matrix");
   if (rep.backfilled && !rep.backfilled.error) {
     const b = (rep.backfilled.email || 0) + (rep.backfilled.unknown || 0);
     if (b) parts.push("imported " + b + " recent");
@@ -302,22 +306,41 @@ document.querySelectorAll("#main-seg button").forEach((b) =>
   b.addEventListener("click", () => setTab(b.dataset.tab)));
 
 async function loadInbox() {
-  const { sections } = await api("/api/inbox");
-  state.inbox = sections;
+  const r = await api("/api/inbox");
+  state.inbox = r.sections;
+  state.priority = r.priority || [];
   renderInbox();
+}
+function renderPriority() {
+  const items = (state.priority || []).filter((p) => !state.q.trim() || matchInbox(p, state.q.trim().toLowerCase()));
+  if (!items.length) return "";
+  const bubbles = items.map((p) => {
+    const name = senderName(p);
+    const first = name.split(/\s+/)[0] || name;
+    return `<button class="pbub" data-id="${p.id}" title="${esc(name)} · ${esc(p.why.join(", "))}">
+      <span class="pav" style="${avatarStyle(name)}">${esc(initials(name))}</span>
+      <span class="pname">${esc(first)}</span>
+      <span class="pdot"></span>
+    </button>`;
+  }).join("");
+  return `<div class="prio"><div class="prio-h">Read now <span>· the agent's top picks</span></div>
+    <div class="prio-row">${bubbles}</div></div>`;
 }
 
 function senderName(r) {
   return r.from_name || r.from_email;
 }
 
+function matchInbox(r, q) {
+  return !q || (r.from_email || "").toLowerCase().includes(q) ||
+    (r.from_name || "").toLowerCase().includes(q) ||
+    (r.subject || "").toLowerCase().includes(q) || (r.body || "").toLowerCase().includes(q);
+}
 function renderInbox() {
   const q = state.q.trim().toLowerCase();
   const list = $("inbox-list");
-  const match = (r) => !q || (r.from_email || "").toLowerCase().includes(q) ||
-    (r.from_name || "").toLowerCase().includes(q) ||
-    (r.subject || "").toLowerCase().includes(q) || (r.body || "").toLowerCase().includes(q);
-  const html = SECTIONS.map((s) => {
+  const match = (r) => matchInbox(r, q);
+  const html = renderPriority() + SECTIONS.map((s) => {
     const rows = (state.inbox?.[s.id] || []).filter(match);
     if (!rows.length) return "";
     const unread = rows.filter((r) => !r.read).length;
@@ -353,6 +376,8 @@ function renderInbox() {
     renderInbox();
   }));
   list.querySelectorAll(".mailrow").forEach((el) =>
+    el.addEventListener("click", () => openEmail(el.dataset.id)));
+  list.querySelectorAll(".pbub").forEach((el) =>
     el.addEventListener("click", () => openEmail(el.dataset.id)));
 }
 
@@ -496,16 +521,28 @@ function openContactForm(c) {
   $("form-title").textContent = c ? "Edit Contact" : "New Contact";
   $("f-name").value = c?.name || ""; $("f-email").value = c?.email || "";
   $("f-phone").value = c?.phone || ""; $("f-matrix").value = c?.matrix_id || "";
+  $("f-e2ee").value = c?.e2ee_handle || "";
   $("f-notes").value = c?.notes || ""; $("f-room").value = c?.matrix_room || "";
   $("btn-archive").hidden = !c;
+  $("safety-row").hidden = !(c?.e2ee_handle);
+  $("tout-safety").textContent = "";
   show("form");
 }
+$("btn-safety").addEventListener("click", async () => {
+  if (!state.editing) return;
+  $("tout-safety").textContent = "…";
+  try {
+    const r = await api(`/api/contacts/${state.editing}/safety`);
+    $("tout-safety").textContent = r.ok ? r.safetyNumber : "✗ " + (r.error || "");
+  } catch (e) { $("tout-safety").textContent = "✗ " + e.message; }
+});
 $("btn-form-back").addEventListener("click", () => { show("list"); refresh(); });
 $("contact-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const payload = {
     name: $("f-name").value, email: $("f-email").value, phone: $("f-phone").value,
-    matrix_id: $("f-matrix").value, notes: $("f-notes").value, matrix_room: $("f-room").value,
+    matrix_id: $("f-matrix").value, e2ee_handle: $("f-e2ee").value,
+    notes: $("f-notes").value, matrix_room: $("f-room").value,
   };
   if (state.editing) await api(`/api/contacts/${state.editing}`, { method: "PUT", body: JSON.stringify(payload) });
   else await api("/api/contacts", { method: "POST", body: JSON.stringify(payload) });
@@ -520,11 +557,11 @@ $("btn-archive").addEventListener("click", async () => {
 // ---------- settings ----------
 $("btn-settings").addEventListener("click", async () => {
   const s = await api("/api/settings");
-  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "e2ee_url", "e2ee_handle"])
     $("s-" + k).value = s.values[k] || "";
   $("s-smtp_secure").value = s.values["smtp_secure"] || "";
-  $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = "";
-  for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured]]) {
+  $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = ""; $("s-e2ee_token").value = "";
+  for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured], ["e2ee", s.e2ee_configured]]) {
     const el = $("cfg-" + k);
     el.textContent = v ? "on" : "off";
     el.className = "cfgdot" + (v ? " yes" : "");
@@ -553,9 +590,9 @@ async function renderRulesList() {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token"])
     payload[k] = $("s-" + k).value;
-  for (const k of ["imap_pass", "smtp_pass", "matrix_token"]) if (!payload[k]) delete payload[k];
+  for (const k of ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"]) if (!payload[k]) delete payload[k];
   await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   $("btn-settings").click();
 });

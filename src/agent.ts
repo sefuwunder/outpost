@@ -3,11 +3,44 @@
 
 import {
   getDb, setTriage, untriagedEmail, untriagedInbox, upsertNudge, pruneNudges, listActiveNudges,
-  listUnknown, matchTriageRule, type TriageCategory,
+  listUnknown, matchTriageRule, listInbox, findContactByEmail, getContact,
+  type TriageCategory, type InboxRow,
 } from "./db";
 import { ensureSeeded, classify, modelTrusted, type JevClass } from "./jev";
 
 export interface Classification { category: TriageCategory; reason: string }
+
+export interface PriorityItem extends InboxRow { score: number; why: string[] }
+
+/**
+ * "Read now": the unread inbox messages the agent thinks matter most.
+ * Deterministic and explainable — category weight, recency, starred senders,
+ * and open nudges (reply-needed, unknown-waiting) all feed the score.
+ */
+export function rankInbox(limit = 8, nowMs = Date.now()): PriorityItem[] {
+  const nudges = listActiveNudges(nowMs);
+  const replyNeededFor = new Set(nudges.filter((n) => n.kind === "reply_needed").map((n) => n.contact_id));
+  const unknownSenders = new Set(nudges.filter((n) => n.kind === "unknown_waiting").map((n) => n.contact_id));
+  const base: Record<string, number> = { personal: 100, receipt: 60, automated: 40, newsletter: 15 };
+  const scored: PriorityItem[] = [];
+  for (const r of listInbox()) {
+    if (r.read) continue;
+    const why: string[] = [];
+    let score = base[r.category] ?? 40;
+    why.push(r.category);
+    const ageH = Math.max(0, (nowMs - Date.parse(r.at)) / 36e5);
+    const fresh = Math.max(0, 50 - ageH * 1.5);
+    score += fresh;
+    if (ageH < 6) why.push("recent");
+    const contact = (r.contact_id && getContact(r.contact_id)) || findContactByEmail(r.from_email);
+    if (contact?.starred) { score += 30; why.push("starred"); }
+    if (contact && replyNeededFor.has(contact.id)) { score += 80; why.push("needs your reply"); }
+    if (contact && unknownSenders.has(contact.id)) { score += 40; why.push("waiting on you"); }
+    scored.push({ ...r, score: Math.round(score), why });
+  }
+  scored.sort((a, b) => b.score - a.score || (a.at < b.at ? 1 : -1));
+  return scored.slice(0, limit);
+}
 
 export interface Classified extends Classification {
   confidence: number;

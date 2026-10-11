@@ -108,6 +108,8 @@
     <fieldset class="card">
       <label><span class="lab">Matrix ID</span><input id="f-matrix" maxlength="120" placeholder="@jane:matrix.org"></label>
       <label><span class="lab">Matrix room ID</span><input id="f-room" maxlength="200" placeholder="!room:matrix.org"></label>
+      <label><span class="lab">🔒 E2EE handle</span><input id="f-e2ee" maxlength="40" placeholder="jane" autocapitalize="off"></label>
+      <div class="testrow" id="safety-row" hidden><span>Safety number</span><span class="testout" id="tout-safety" style="font-size:12px"></span><button id="btn-safety" type="button">Verify</button></div>
       <label><span class="lab">Notes</span><textarea id="f-notes" rows="2" maxlength="2000"></textarea></label>
     </fieldset>
     <div class="formbtns">
@@ -154,6 +156,13 @@
     <label><span class="lab">Homeserver</span><input id="s-matrix_homeserver" placeholder="https://matrix.org"></label>
     <label><span class="lab">Access token</span><input id="s-matrix_token" type="password"></label>
     <div class="testrow"><span>Connection</span><span class="testout" id="tout-matrix"></span><button data-test="matrix" type="button">Test</button></div>
+  </fieldset>
+  <div class="secttl">🔒 Encrypted · <span class="cfgdot" id="cfg-e2ee">off</span></div>
+  <fieldset class="card">
+    <label><span class="lab">Relay server</span><input id="s-e2ee_url" placeholder="http://127.0.0.1:3030"></label>
+    <label><span class="lab">Your handle</span><input id="s-e2ee_handle" maxlength="40" placeholder="you" autocapitalize="off"></label>
+    <label><span class="lab">Provision token</span><input id="s-e2ee_token" type="password" autocomplete="off"></label>
+    <div class="testrow"><span>Registration</span><span class="testout" id="tout-e2ee"></span><button data-test="e2ee" type="button">Test</button></div>
   </fieldset>
   <div class="secttl">Triage rules <span style="text-transform:none;letter-spacing:0">— what the agent learned from your corrections</span></div>
   <fieldset class="card" id="rules-card"><div id="rules-list" style="padding:11px 0;font-size:15px;color:var(--muted)">No rules yet — correct a label to teach the agent.</div></fieldset>

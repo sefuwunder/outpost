@@ -6,8 +6,10 @@ with every channel condensed into a single conversation.
 
 It opens on a 30-day **Inbox**: every inbound email of the last month,
 organized by the agent into Personal / Newsletters / Receipts / Automated —
-senders don't need to be saved contacts to appear. An Inbox/Chats segmented
-control switches to the unified per-contact threads.
+senders don't need to be saved contacts to appear. Above the sections sits a
+**Read now** strip: the 8 unread messages the agent ranks most important
+(category, recency, starred senders, open nudges), as contact bubbles.
+An Inbox/Chats segmented control switches to the unified per-contact threads.
 
 Built on Relay's codebase: the IMAP/SMTP/Matrix transports are shared verbatim.
 
@@ -97,11 +99,28 @@ src/
   imap.ts      — IMAP client (shared with relay)
   smtp.ts      — SMTP send + Google Voice gateways (shared with relay)
   matrix.ts    — Matrix send/sync (shared with relay)
+  e2ee/        — end-to-end encryption (copied from outpost-e2ee: X3DH + Double Ratchet, pure WebCrypto)
 public/        — conversation-view UI (zero-dep vanilla JS)
 tests/         — bun tests
 ```
 
 Data lives in `./data/` (gitignored).
+
+## 🔒 Encrypted channel (outpost-e2ee)
+
+Outpost speaks to a self-hosted [outpost-e2ee](https://github.com/sefuwunder/outpost-e2ee)
+relay (X3DH + Double Ratchet, pure WebCrypto). The relay holds only public
+keys and ciphertext — it can never read messages.
+
+1. Start the relay: `bun src/server.ts` in outpost-e2ee (port 3030), with
+   `E2EE_PROVISION_TOKEN` set.
+2. In outpost Settings → 🔒 Encrypted: set the relay server URL, your handle,
+   and the provision token; hit **Test** (registers your keys).
+3. Give a contact their 🔒 E2EE handle in the contact editor — **🔒 Encrypted**
+   appears as a fourth channel in the composer.
+4. Their replies arrive through the normal 60s poll, decrypted on your machine
+   into the unified thread. **Verify** in the contact editor shows the safety
+   number — read it to each other once to rule out a meddler in the middle.
 
 ## Tests
 

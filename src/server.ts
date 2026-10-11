@@ -16,6 +16,7 @@ const SETTING_KEYS = new Set([
   "imap_host", "imap_port", "imap_user", "imap_pass",
   "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_secure",
   "matrix_homeserver", "matrix_token", "matrix_user_id",
+  "e2ee_url", "e2ee_token", "e2ee_handle",
 ]);
 const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "matrix_user_id"];
 
@@ -116,7 +117,7 @@ Bun.serve({
       if (m && req.method === "PUT") {
         const b = await req.json().catch(() => ({})) as any;
         const patch: any = {};
-        for (const k of ["name", "email", "phone", "matrix_id", "notes", "starred", "archived"]) if (b[k] !== undefined) patch[k] = b[k];
+        for (const k of ["name", "email", "phone", "matrix_id", "e2ee_handle", "notes", "starred", "archived"]) if (b[k] !== undefined) patch[k] = b[k];
         if (b.matrix_room !== undefined) {
           if (typeof b.matrix_room !== "string" || b.matrix_room.length > 200) return bad("bad room");
           setSetting(`matrix_room:${m[1]}`, b.matrix_room.trim());
@@ -124,6 +125,18 @@ Bun.serve({
         const c = updateContact(m[1], patch);
         if (!c) return bad("not found", 404);
         return json({ contact: { ...c, matrix_room: getSetting(`matrix_room:${c.id}`) } });
+      }
+      m = p.match(/^\/api\/contacts\/([\w-]+)\/safety$/);
+      if (m && req.method === "GET") {
+        // Safety number for this contact's E2EE handle — read it to each other.
+        const c = getContact(m[1]);
+        if (!c?.e2ee_handle) return bad("contact has no E2EE handle", 404);
+        try {
+          const { e2eeSafetyNumber } = await import("./channels");
+          return json({ ok: true, handle: c.e2ee_handle, safetyNumber: await e2eeSafetyNumber(c.e2ee_handle) });
+        } catch (e: any) {
+          return json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        }
       }
       if (p === "/api/unknown" && req.method === "GET") {
         return json({ unknown: listUnknown() });
@@ -154,10 +167,16 @@ Bun.serve({
         }
         return json({ ok: true, ...publicSettings() });
       }
-      m = p.match(/^\/api\/settings\/test\/(email|sms|matrix)$/);
+      m = p.match(/^\/api\/settings\/test\/(email|sms|matrix|e2ee)$/);
       if (m && req.method === "POST") {
         const which = m[1];
         try {
+          if (which === "e2ee") {
+            const { ensureE2EERegistered, getE2EEClient } = await import("./channels");
+            await ensureE2EERegistered();
+            const c = await getE2EEClient();
+            return json({ ok: true, handle: c!.handle, fingerprint: await c!.fingerprint() });
+          }
           if (which === "matrix") {
             const mx = await import("./matrix");
             const r = await mx.validateMatrix({
@@ -207,12 +226,12 @@ Bun.serve({
         return json({ nudges });
       }
       if (p === "/api/inbox" && req.method === "GET") {
-        const { runAgent } = await import("./agent");
+        const { runAgent, rankInbox } = await import("./agent");
         runAgent(); // ensure fresh triage before grouping
         const rows = listInbox();
         const sections: Record<string, typeof rows> = { personal: [], newsletter: [], receipt: [], automated: [] };
         for (const r of rows) (sections[r.category] || sections.personal).push(r);
-        return json({ sections, unread: inboxUnread() });
+        return json({ sections, unread: inboxUnread(), priority: rankInbox(8) });
       }
       m = p.match(/^\/api\/inbox\/([\w-]+)$/);
       if (m && req.method === "DELETE") { deleteInbox(m[1]); return json({ ok: true }); }

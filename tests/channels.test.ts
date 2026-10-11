@@ -13,14 +13,17 @@ const inbox = {
   email: [] as any[],
   sms: [] as any[],
   matrix: [] as any[],
+  encrypted: [] as any[],
 };
 const stub: ch.Transports = {
   sendEmail: async (to, _s, text) => { sent.push({ kind: "email", to, text }); },
   sendSms: async (digits, text) => { sent.push({ kind: "sms", to: digits, text }); },
   sendMatrix: async (contact, text) => { sent.push({ kind: "matrix", to: contact.matrix_id, text }); },
+  sendEncrypted: async (handle, text) => { sent.push({ kind: "encrypted", to: handle, text }); },
   fetchEmail: async () => inbox.email,
   fetchSms: async () => inbox.sms,
   fetchMatrix: async () => inbox.matrix,
+  fetchEncrypted: async () => inbox.encrypted,
 };
 
 beforeEach(() => {
@@ -28,7 +31,7 @@ beforeEach(() => {
   const d = db.getDb();
   d.exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings;");
   sent.length = 0;
-  inbox.email = []; inbox.sms = []; inbox.matrix = [];
+  inbox.email = []; inbox.sms = []; inbox.matrix = []; inbox.encrypted = [];
 });
 
 test("availableChannels reflects what the contact has", () => {
