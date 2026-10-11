@@ -29,7 +29,7 @@ const stub: ch.Transports = {
 beforeEach(() => {
   db.openDb(join(process.env.OUTPOST_DATA!, "t.db"));
   const d = db.getDb();
-  d.exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings;");
+  d.exec("DELETE FROM messages; DELETE FROM conversations; DELETE FROM contacts; DELETE FROM unknown_senders; DELETE FROM settings; DELETE FROM inbox; DELETE FROM triage;");
   sent.length = 0;
   inbox.email = []; inbox.sms = []; inbox.matrix = []; inbox.encrypted = [];
 });
@@ -92,6 +92,72 @@ test("poll: sms matched by digits, matrix by sender", async () => {
   const bodies = db.listMessages(db.conversationFor(c.id).conversation_id || db.conversationFor(c.id).id).map((m) => m.body);
   expect(bodies).toContain("text me");
   expect(bodies).toContain("mx hi");
+});
+
+test("poll: GV forward recognized as SMS, not email", async () => {
+  const c = db.createContact({ name: "G", phone: "+1 (555) 000-7777" });
+  const gvBody = "hey there\n\nTo respond to this text message, reply to this email or visit Google Voice. YOUR ACCOUNT <https://voice.google.com> HELP CENTER <...>";
+  inbox.email = [
+    { from: '"G" <15550007777@txt.voice.google.com>', to: [], subject: "SMS", date: "2026-10-11", dateTime: new Date().toISOString(), snippet: gvBody.slice(0, 280), body: gvBody, returnPath: "", uid: "10", messageId: "gv1" },
+  ];
+  const rep = await ch.pollInbox(stub);
+  expect(rep.sms).toBe(1);
+  expect(rep.email).toBe(0);
+  expect(rep.unknown).toBe(0);
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].channel).toBe("sms");
+  expect(msgs[0].body).toBe("hey there"); // gateway footer stripped
+  expect(db.getDb().query("SELECT COUNT(*) AS n FROM inbox").get().n).toBe(0);
+  expect(db.listUnknown().length).toBe(0);
+  const rep2 = await ch.pollInbox(stub); // second poll dedupes on sms:<messageId>
+  expect(rep2.sms).toBe(0);
+  expect(db.listMessages(db.conversationFor(c.id).id).length).toBe(1);
+});
+
+test("poll: GV forward from unknown number becomes sms unknown sender", async () => {
+  inbox.email = [
+    { from: "15550008888@txt.voice.google.com", to: [], subject: "", date: "2026-10-11", dateTime: new Date().toISOString(), snippet: "hello?", body: "hello?", returnPath: "", uid: "11", messageId: "gv2" },
+  ];
+  const rep = await ch.pollInbox(stub);
+  expect(rep.unknown).toBe(1);
+  expect(rep.email).toBe(0);
+  const u = db.listUnknown()[0];
+  expect(u.channel).toBe("sms");
+  expect(u.handle).toBe("5550008888");
+  expect(db.getDb().query("SELECT COUNT(*) AS n FROM inbox").get().n).toBe(0);
+});
+
+test("poll: GV composite and mms formats recognized", async () => {
+  const c = db.createContact({ name: "H", phone: "5550009999" });
+  inbox.email = [
+    { from: "12015550001.15550009999.X47VN2Z-g6@txt.voice.google.com", to: [], subject: "", date: "2026-10-11", dateTime: new Date().toISOString(), snippet: "comp", body: "comp", returnPath: "", uid: "12", messageId: "gv3" },
+    { from: "15550009999@mms.voice.google.com", to: [], subject: "", date: "2026-10-11", dateTime: new Date().toISOString(), snippet: "pic", body: "pic", returnPath: "", uid: "13", messageId: "gv4" },
+  ];
+  const rep = await ch.pollInbox(stub);
+  expect(rep.sms).toBe(2);
+  const bodies = db.listMessages(db.conversationFor(c.id).id).map((m) => m.body);
+  expect(bodies).toContain("comp");
+  expect(bodies).toContain("pic");
+});
+
+test("migrateGvRecognition repairs legacy misfiled GV rows", () => {
+  const c = db.createContact({ name: "Z", phone: "5550001111" });
+  // legacy unknown sender: gateway address filed as email
+  db.upsertUnknown("email", "15550001111@txt.voice.google.com", "", "hey", new Date().toISOString());
+  // legacy inbox row: GV forward filed as email
+  db.upsertInbox({ from_email: "15550001111@txt.voice.google.com", from_name: "", subject: "", body: "yo", at: new Date().toISOString(), external_id: "email:leg1" });
+  db.migrateGvRecognition();
+  const us = db.listUnknown();
+  expect(us.length).toBe(1);
+  expect(us[0].channel).toBe("sms");
+  expect(us[0].handle).toBe("5550001111");
+  expect(db.getDb().query("SELECT COUNT(*) AS n FROM inbox").get().n).toBe(0);
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.some((m) => m.channel === "sms" && m.body === "yo")).toBe(true);
+  db.migrateGvRecognition(); // idempotent
+  expect(db.listUnknown().length).toBe(1);
+  expect(db.getDb().query("SELECT COUNT(*) AS n FROM messages").get().n).toBe(msgs.length);
 });
 
 test("poll: dead channel doesn't sink the sweep", async () => {

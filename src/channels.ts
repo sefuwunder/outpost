@@ -7,7 +7,7 @@ import {
   getE2EEState, setE2EEState, delE2EEState,
   type Channel, type Contact,
 } from "./db";
-import { extractEmail, type UnseenMail } from "./imap";
+import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail } from "./imap";
 
 export interface Transports {
   sendEmail(to: string, subject: string, text: string): Promise<void>;
@@ -113,6 +113,13 @@ export function ingestEmail(m: UnseenMail, report: PollReport): void {
   const addr = extractEmail(m.from || "");
   if (!addr.includes("@")) return;
   const at = m.dateTime || new Date().toISOString();
+  // Google Voice SMS forwards arrive as mail from {digits}@txt|mms.voice.google.com —
+  // recognize them as SMS (contacts matched by phone digits), not regular email.
+  const gvDigits = gvNumberFrom(m.from || "", m.subject || "", m.returnPath || "");
+  if (gvDigits) {
+    ingestGvSms(m, gvDigits, at, report);
+    return;
+  }
   const extId = m.messageId ? `email:${m.messageId}` : (m.uid ? `email:uid-${m.uid}@${addr}` : null);
   const c = findContactByEmail(addr);
   if (c) {
@@ -137,6 +144,25 @@ export function ingestEmail(m: UnseenMail, report: PollReport): void {
       body: m.body || m.snippet, at, external_id: extId,
     });
     upsertUnknown("email", addr, "", m.body || m.snippet, at);
+    report.unknown++;
+  }
+}
+
+/** A GV forward is an SMS wearing an email envelope: strip the gateway
+ *  footer, match the contact by phone digits, file it as an SMS message. */
+function ingestGvSms(m: UnseenMail, digits: string, at: string, report: PollReport): void {
+  const body = stripGvFooter(m.body || m.snippet || "").trim() || "(empty SMS)";
+  const extId = m.messageId ? `sms:${m.messageId}` : (m.uid ? `sms:gv-${m.uid}@${digits}` : `sms:gv-${Date.now()}@${digits}`);
+  const c = findContactByPhone(digits);
+  if (c) {
+    const conv = conversationFor(c.id);
+    const added = addMessage({
+      conversation_id: conv.id, channel: "sms", direction: "in", body,
+      external_id: extId, created_at: at,
+    });
+    if (added) report.sms++;
+  } else {
+    upsertUnknown("sms", digits, extractName(m.from || ""), body, at);
     report.unknown++;
   }
 }
@@ -291,7 +317,9 @@ export function realTransports(): Transports {
       const out: Array<{ number: string; name: string; body: string; at: string; messageId: string }> = [];
       for (const h of harvest.conversations) {
         const ctx = await imap.latestEmailWith(imapCfg(), `${h.number}@txt.voice.google.com`, 1500).catch(() => null);
-        if (ctx?.snippet) out.push({ number: h.number, name: h.name, body: ctx.snippet, at: new Date().toISOString(), messageId: "" });
+        // Dedupe-safe: the real message-id lets addMessage skip forwards that
+        // ingestEmail already filed as SMS.
+        if (ctx?.snippet) out.push({ number: h.number, name: h.name, body: stripGvFooter(ctx.snippet).trim() || "(empty SMS)", at: ctx.dateTime || ctx.date || new Date().toISOString(), messageId: ctx.messageId || "" });
       }
       return out;
     },

@@ -498,6 +498,7 @@ export interface EmailContext {
   from: string;
   subject: string;
   date: string; // ISO
+  dateTime: string; // full ISO INTERNALDATE ("" when unparseable)
   body: string; // plain text
   direction: "in" | "out";
 }
@@ -515,7 +516,7 @@ export async function latestEmailWith(cfg0: ImapConfig, email: string, maxBodyCh
     const sentName = await findSentMailbox(conn).catch(() => null);
     const boxes: { name: string; kind: "inbox" | "sent" }[] = [{ name: "INBOX", kind: "inbox" }];
     if (sentName && sentName.toUpperCase() !== "INBOX") boxes.push({ name: sentName, kind: "sent" });
-    let best: { kind: "inbox" | "sent"; box: string; uid: string; from: string; subject: string; date: string; messageId: string } | null = null;
+    let best: { kind: "inbox" | "sent"; box: string; uid: string; from: string; subject: string; date: string; dateTime: string; messageId: string } | null = null;
     for (const box of boxes) {
       await conn.cmd("e001", `${box.kind === "inbox" ? "SELECT" : "EXAMINE"} ${qstr(box.name)}`);
       const uids = parseSearchUids(await conn.cmd("e002", `UID SEARCH OR FROM ${qstr(addr)} TO ${qstr(addr)}`));
@@ -526,7 +527,7 @@ export async function latestEmailWith(cfg0: ImapConfig, email: string, maxBodyCh
         const e = envs.get(u);
         if (!e || !e.date) continue;
         if (!best || e.date >= best.date) {
-          best = { kind: box.kind, box: box.name, uid: u, from: e.from, subject: e.subject, date: e.date, messageId: e.messageId };
+          best = { kind: box.kind, box: box.name, uid: u, from: e.from, subject: e.subject, date: e.date, dateTime: e.dateTime || "", messageId: e.messageId };
         }
       }
     }
@@ -535,7 +536,7 @@ export async function latestEmailWith(cfg0: ImapConfig, email: string, maxBodyCh
     const body = await fetchTextPlain(conn, "e005", best.uid, maxBodyChars);
     return {
       mailbox: best.kind, uid: best.uid, messageId: best.messageId,
-      from: best.from, subject: best.subject, date: best.date, body,
+      from: best.from, subject: best.subject, date: best.date, dateTime: best.dateTime, body,
       direction: extractEmail(best.from).toLowerCase() === addr ? "in" : "out",
     };
   } finally {

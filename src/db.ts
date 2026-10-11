@@ -2,6 +2,7 @@
 // conversation per contact, every channel condensed into a single thread.
 
 import { Database } from "bun:sqlite";
+import { parseGvNumber, stripGvFooter } from "./imap";
 
 const DATA_DIR = process.env.OUTPOST_DATA || new URL("../data/", import.meta.url).pathname;
 
@@ -125,6 +126,12 @@ export function openDb(path?: string): Database {
   for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
     if (!triCols.some((c) => c.name === col)) db.exec(`ALTER TABLE triage ADD COLUMN ${col} ${def}`);
   }
+  // Migration: recognize Google Voice SMS forwards as SMS, not email.
+  // Older runs filed {digits}@txt|mms.voice.google.com forwards as regular email
+  // (inbox rows + email-channel unknown senders). Re-label the unknown senders
+  // and convert inbox rows into SMS messages wherever the SMS twin already
+  // exists or a contact match lets us file one. Idempotent.
+  migrateGvRecognition();
   // Backfill inbox from existing email messages + unknown senders (once).
   const inbCount = (db.query("SELECT COUNT(*) AS n FROM inbox").get() as { n: number }).n;
   if (inbCount === 0) {
@@ -145,6 +152,42 @@ export function openDb(path?: string): Database {
     `);
   }
   return db;
+}
+
+/** One-time repair for the pre-recognition era: GV forwards that were
+ *  misfiled as regular email. Unknown senders get re-labeled to the sms
+ *  channel with the digit handle; inbox rows become SMS messages on the
+ *  contact's thread (or are dropped when the SMS twin already exists).
+ *  Rows with no contact match are left alone — they age out of the 30-day
+ *  inbox on their own. Idempotent. */
+export function migrateGvRecognition(): void {
+  const d = getDb();
+  for (const u of d.query("SELECT id, handle FROM unknown_senders WHERE channel = 'email'").all() as { id: string; handle: string }[]) {
+    const digits = parseGvNumber(u.handle);
+    if (!digits) continue;
+    const dup = d.query("SELECT id FROM unknown_senders WHERE channel = 'sms' AND handle = ?").get(digits) as { id: string } | null;
+    if (dup) d.query("DELETE FROM unknown_senders WHERE id = ?").run(u.id);
+    else d.query("UPDATE unknown_senders SET channel = 'sms', handle = ? WHERE id = ?").run(digits, u.id);
+  }
+  for (const r of d.query("SELECT * FROM inbox").all() as InboxRow[]) {
+    const digits = parseGvNumber(r.from_email);
+    if (!digits) continue;
+    const msgId = (r.external_id || "").replace(/^email:/, "");
+    const smsExt = msgId ? `sms:${msgId}` : "";
+    const twin = smsExt ? (d.query("SELECT id FROM messages WHERE external_id = ?").get(smsExt) as { id: string } | null) : null;
+    if (!twin) {
+      const c = findContactByPhone(digits);
+      if (!c || !smsExt) continue; // nothing to attach it to — leave the row
+      const conv = conversationFor(c.id);
+      addMessage({
+        conversation_id: conv.id, channel: "sms", direction: "in",
+        body: stripGvFooter(r.body || "").trim() || "(empty SMS)",
+        external_id: smsExt, created_at: r.at,
+      });
+    }
+    d.query("DELETE FROM inbox WHERE id = ?").run(r.id);
+    d.query("DELETE FROM triage WHERE message_id = ?").run(r.id);
+  }
 }
 
 export function getDb(): Database {
