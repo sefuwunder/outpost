@@ -189,10 +189,13 @@ export async function consultLLM(force = false): Promise<ConsultReport> {
         method: "POST",
         headers: { "content-type": "application/json" },
         signal: ctl.signal,
-        body: JSON.stringify({ model: s.model, prompt: buildPrompt(ctx), stream: false, format: "json" }),
+        body: JSON.stringify({ model: s.model, prompt: buildPrompt(ctx), stream: false }),
       });
       clearTimeout(timer);
-      if (!r.ok) throw new Error(`LLM ${r.status}`);
+      if (!r.ok) {
+        const detail = await r.text().catch(() => "");
+        throw new Error(`LLM ${r.status}: ${detail.slice(0, 160)}`);
+      }
       const j = (await r.json()) as { response?: string };
       const parsed = parseJudgment(j.response || "");
       if (!parsed) throw new Error("unparseable judgment");
@@ -240,9 +243,12 @@ async function askLLM(prompt: string): Promise<string> {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: ctl.signal,
-      body: JSON.stringify({ model: s.model, prompt, stream: false, format: "json" }),
+      body: JSON.stringify({ model: s.model, prompt, stream: false }),
     });
-    if (!r.ok) throw new Error(`LLM ${r.status}`);
+    if (!r.ok) {
+      const detail = await r.text().catch(() => "");
+      throw new Error(`LLM ${r.status}: ${detail.slice(0, 160)}`);
+    }
     const j = (await r.json()) as { response?: string };
     return j.response || "";
   } finally {
