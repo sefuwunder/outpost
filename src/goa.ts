@@ -132,7 +132,7 @@ function busData(v: any): any {
 const GOA_BUS = "org.gnome.OnlineAccounts";
 const GOA_ROOT = "/org/gnome/OnlineAccounts";
 
-async function busCall(run: RunFn, dest: string, path: string, iface: string, method: string, ...args: string[]): Promise<any> {
+async function busCall(run: RunFn, dest: string, path: string, iface: string, method: string, ...args: string[]): Promise<any[]> {
   let res: { code: number; stdout: string; stderr: string };
   try {
     res = await run("busctl", ["--user", "--json=short", "call", dest, path, iface, method, ...args]);
@@ -147,13 +147,20 @@ async function busCall(run: RunFn, dest: string, path: string, iface: string, me
     }
     throw new GoaError("call-failed", `D-Bus call ${iface}.${method} failed: ${err || "exit " + res.code}`);
   }
-  let parsed: BusVal;
+  let parsed: any;
   try {
     parsed = JSON.parse(res.stdout);
   } catch {
     throw new GoaError("call-failed", `could not parse busctl output for ${iface}.${method}`);
   }
-  return busData(parsed);
+  // busctl reports the full reply signature, e.g.
+  // {"type":"(a{oa{sa{sv}}})","data":[...]} — data is the out-args array.
+  if (!isBusVal(parsed)) {
+    throw new GoaError("call-failed", `unexpected busctl output shape for ${iface}.${method}`);
+  }
+  const data = parsed.data;
+  const outArgs = Array.isArray(data) ? data : [data];
+  return outArgs.map(busData);
 }
 
 const str = (v: any) => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -200,8 +207,8 @@ export async function goaAvailable(run: RunFn = defaultRun): Promise<boolean> {
 
 /** Raw managed objects from goa-daemon (unfiltered). */
 export async function rawGoaObjects(run: RunFn = defaultRun): Promise<Record<string, Record<string, Record<string, any>>>> {
-  return await busCall(run, GOA_BUS, GOA_ROOT, "org.freedesktop.DBus.ObjectManager", "GetManagedObjects") as
-    Record<string, Record<string, Record<string, any>>>;
+  const [objs] = await busCall(run, GOA_BUS, GOA_ROOT, "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
+  return (objs || {}) as Record<string, Record<string, Record<string, any>>>;
 }
 
 /** Mail-capable GOA accounts. Throws GoaError("unavailable") when GOA isn't reachable. */
@@ -237,6 +244,16 @@ export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, 
     info.busctl = `missing: ${e?.message || e}`.slice(0, 80);
   }
   try {
+    const rawRes = await run("busctl", ["--user", "--json=short", "call",
+      "org.gnome.OnlineAccounts", "/org/gnome/OnlineAccounts",
+      "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"]);
+    let sample = (rawRes.stdout || "").slice(0, 1500);
+    sample = sample.replace(/"data":"[^"]*@[^"]*"/g, '"data":"<email>"');
+    info.rawSample = sample;
+  } catch (e: any) {
+    info.rawSample = `unavailable: ${String(e?.message || e).slice(0, 120)}`;
+  }
+  try {
     const objs = await rawGoaObjects(run);
     info.callOk = true;
     const paths = Object.keys(objs || {});
@@ -265,13 +282,13 @@ export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, 
 /** Fetch fresh credentials for one account. Tokens come from the keyring via goa-daemon. */
 export async function getGoaCredentials(acct: GoaMailAccount, run: RunFn = defaultRun): Promise<GoaCredentials> {
   if (acct.oauth2) {
-    const token = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.OAuth2Based", "GetAccessToken");
+    const [token] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.OAuth2Based", "GetAccessToken");
     if (typeof token !== "string" || !token) throw new GoaError("auth", `GOA account ${acct.email}: no access token`);
     return { user: acct.email, oauth2: true, token };
   }
   if (acct.passwordBased) {
-    const imapPassword = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "imap");
-    const smtpPassword = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "smtp");
+    const [imapPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "imap");
+    const [smtpPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "smtp");
     if (!imapPassword) throw new GoaError("auth", `GOA account ${acct.email}: no stored IMAP password`);
     return { user: acct.email, oauth2: false, imapPassword: String(imapPassword), smtpPassword: String(smtpPassword || "") };
   }

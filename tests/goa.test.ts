@@ -63,7 +63,8 @@ function managedObjectsJson() {
       ifaces([acct("goa_account_1004", "owncloud", "Nextcloud", true, "dave"),
         ["org.gnome.OnlineAccounts.Documents", props([])]])], // no Mail iface
   ];
-  return JSON.stringify({ type: "a{oa{sa{sv}}}", data: objs });
+  // busctl reports the full reply signature: {"type":"(a{oa{sa{sv}}})","data":[...]}
+  return JSON.stringify({ type: "(a{oa{sa{sv}}})", data: [objs] });
 }
 
 function fakeRun(calls: string[]) {
@@ -72,10 +73,10 @@ function fakeRun(calls: string[]) {
     const m = args.indexOf("call");
     const method = args[m + 4];
     if (method === "GetManagedObjects") return { code: 0, stdout: managedObjectsJson(), stderr: "" };
-    if (method === "GetAccessToken") return { code: 0, stdout: JSON.stringify({ type: "s", data: "ya29.faketoken" }), stderr: "" };
+    if (method === "GetAccessToken") return { code: 0, stdout: JSON.stringify({ type: "(s)", data: ["ya29.faketoken"] }), stderr: "" };
     if (method === "GetPassword") {
       const id = args[args.length - 1];
-      return { code: 0, stdout: JSON.stringify({ type: "s", data: `pw-for-${id}` }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ type: "(s)", data: [`pw-for-${id}`] }), stderr: "" };
     }
     return { code: 1, stdout: "", stderr: "unknown method" };
   };
