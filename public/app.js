@@ -667,6 +667,7 @@ async function loadGoaAccounts(selected) {
   updateMailProviderUI();
   const sel = $("s-goa_account");
   const note = $("goa-note");
+  $("btn-goa-test").disabled = true;
   try {
     const r = await api("/api/goa/accounts");
     if (!r.available) {
@@ -681,6 +682,7 @@ async function loadGoaAccounts(selected) {
     }
     sel.innerHTML = r.accounts.map((a) =>
       `<option value="${esc(a.id)}"${a.id === selected ? " selected" : ""}>${esc(a.email)} (${esc(a.providerName)})</option>`).join("");
+    $("btn-goa-test").disabled = false;
     note.textContent = "Uses your GNOME Online Accounts — tokens stay in the GNOME keyring, outpost never stores them.";
   } catch (e) {
     sel.innerHTML = `<option value="">Couldn't load</option>`;

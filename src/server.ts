@@ -239,7 +239,7 @@ Bun.serve({
             return json({ ok: false, error: "GNOME Online Accounts not reachable — is this a GNOME session?" });
           const accounts = await goa.listGoaMailAccounts();
           const acct = accounts.find((a) => a.id === (b.account_id || ""));
-          if (!acct) return json({ ok: false, error: "account not found — is it still enabled for Mail in GNOME Settings?" });
+          if (!acct) return json({ ok: false, error: `account "${(b.account_id || "").slice(0, 60)}" not found (server sees: ${accounts.map((a) => a.id).join(", ") || "no mail accounts"}) — is it still enabled for Mail in GNOME Settings?` });
           const creds = await goa.getGoaCredentials(acct);
           const im = await import("./imap");
           const sm = await import("./smtp");
