@@ -24,6 +24,37 @@ test("upsertInbox dedupes by external_id and links late contact info", () => {
   expect(row.message_id).toBe("m1");
 });
 
+test("adding a sender as a contact backfills inbox contact_id + clears unknown", () => {
+  db.upsertUnknown("email", "sam@x.com", "Sam", "hey", new Date().toISOString());
+  const id1 = db.upsertInbox({ from_email: "sam@x.com", subject: "hi", body: "yo", at: daysAgo(1), external_id: "email:s1" });
+  const id2 = db.upsertInbox({ from_email: "sam@x.com", subject: "hi2", body: "yo2", at: daysAgo(0), external_id: "email:s2" });
+  const other = db.createContact({ name: "Zed", email: "zed@x.com" });
+  const id3 = db.upsertInbox({ from_email: "zed@x.com", subject: "z", body: "z", at: daysAgo(1), external_id: "email:z1", contact_id: other.id });
+  db.upsertUnknown("email", "stranger@x.com", "", "spam", new Date().toISOString());
+
+  const c = db.createContact({ name: "Sam", email: "Sam@X.com" }); // mixed case
+  expect(db.getInbox(id1)!.contact_id).toBe(c.id);
+  expect(db.getInbox(id2)!.contact_id).toBe(c.id);
+  expect(db.getInbox(id3)!.contact_id).toBe(other.id); // already-linked row untouched
+  expect(db.listUnknown().map((u) => u.handle)).toEqual(["stranger@x.com"]);
+});
+
+test("promoteUnknown links past inbox rows to the new contact", () => {
+  const u = db.upsertUnknown("email", "pat@x.com", "", "hello", new Date().toISOString());
+  const id = db.upsertInbox({ from_email: "pat@x.com", subject: "h", body: "b", at: daysAgo(1), external_id: "email:p1" });
+  const c = db.promoteUnknown(u.id, "Pat")!;
+  expect(db.getInbox(id)!.contact_id).toBe(c.id);
+  expect(db.listUnknown().length).toBe(0);
+});
+
+test("editing a contact to add an email links past inbox rows", () => {
+  const id = db.upsertInbox({ from_email: "kim@x.com", subject: "h", body: "b", at: daysAgo(1), external_id: "email:k1" });
+  const c = db.createContact({ name: "Kim" }); // no email yet
+  expect(db.getInbox(id)!.contact_id).toBe("");
+  db.updateContact(c.id, { email: "kim@x.com" });
+  expect(db.getInbox(id)!.contact_id).toBe(c.id);
+});
+
 test("backfill populates inbox from existing messages and unknown senders", () => {
   const c = db.createContact({ name: "Ada", email: "ada@x.com" });
   const conv = db.conversationFor(c.id);

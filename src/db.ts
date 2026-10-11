@@ -209,7 +209,20 @@ export function createContact(c: { name: string; email?: string; phone?: string;
   getDb().query(
     "INSERT INTO contacts(id, name, email, phone, matrix_id, e2ee_handle, notes, starred, archived, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)"
   ).run(row.id, row.name, row.email, row.phone, row.matrix_id, row.e2ee_handle, row.notes, 0, 0, row.created_at);
+  linkInboxToContact(row);
   return row;
+}
+
+/** A sender just became (or was edited into) a contact: point their past
+ *  inbox rows at the contact and drop their unknown-sender entry so the
+ *  inbox reflects the updated contacts list. Idempotent. */
+export function linkInboxToContact(c: Contact): void {
+  if (!c.email) return;
+  const d = getDb();
+  d.query("UPDATE inbox SET contact_id = ? WHERE contact_id = '' AND lower(from_email) = lower(?)")
+    .run(c.id, c.email);
+  d.query("DELETE FROM unknown_senders WHERE channel = 'email' AND lower(handle) = lower(?)")
+    .run(c.email);
 }
 export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | "email" | "phone" | "matrix_id" | "e2ee_handle" | "notes" | "starred" | "archived">>): Contact | null {
   const cur = getContact(id);
@@ -226,7 +239,9 @@ export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | 
   };
   getDb().query("UPDATE contacts SET name=?, email=?, phone=?, matrix_id=?, e2ee_handle=?, notes=?, starred=?, archived=? WHERE id=?")
     .run(next.name, next.email, next.phone, next.matrix_id, next.e2ee_handle, next.notes, next.starred, next.archived, id);
-  return getContact(id);
+  const updated = getContact(id);
+  if (updated && next.email && next.email !== cur.email) linkInboxToContact(updated);
+  return updated;
 }
 
 /** Find a contact by their E2EE handle (case-insensitive). */
