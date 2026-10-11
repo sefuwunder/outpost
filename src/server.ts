@@ -71,6 +71,10 @@ const TYPES: Record<string, string> = {
 Bun.serve({
   port: PORT,
   hostname: "127.0.0.1",
+  // LLM consult/idle passes can run for many minutes with no bytes flowing
+  // back to the client; Bun's default ~10s idle timeout would drop those
+  // connections mid-pass (curl 52). Localhost-only, so a long leash is fine.
+  idleTimeout: 1800,
   async fetch(req) {
     const url = new URL(req.url);
     const p = url.pathname;
