@@ -370,7 +370,7 @@ export function dismissUnknown(id: string): void {
 export interface InboxRow {
   id: string; from_email: string; from_name: string; subject: string; body: string;
   at: string; external_id: string | null; contact_id: string; message_id: string;
-  read: number; category: TriageCategory;
+  read: number; category: TriageCategory; contact_name?: string;
 }
 
 /** Insert an inbound email; dedupe by external_id. Returns the row id. */
@@ -411,8 +411,9 @@ const INBOX_WINDOW_DAYS = 30;
 export function listInbox(): InboxRow[] {
   const since = new Date(Date.now() - INBOX_WINDOW_DAYS * 86400_000).toISOString();
   return getDb().query(`
-    SELECT i.*, COALESCE(t.category, 'personal') AS category FROM inbox i
+    SELECT i.*, COALESCE(t.category, 'personal') AS category, ct.name AS contact_name FROM inbox i
     LEFT JOIN triage t ON t.message_id = i.id
+    LEFT JOIN contacts ct ON ct.id = i.contact_id
     WHERE i.at >= ? ORDER BY i.at DESC
   `).all(since) as InboxRow[];
 }

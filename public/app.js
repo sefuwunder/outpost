@@ -331,12 +331,12 @@ function renderPriority() {
 }
 
 function senderName(r) {
-  return r.from_name || r.from_email;
+  return r.contact_name || r.from_name || r.from_email;
 }
 
 function matchInbox(r, q) {
   return !q || (r.from_email || "").toLowerCase().includes(q) ||
-    (r.from_name || "").toLowerCase().includes(q) ||
+    (r.from_name || "").toLowerCase().includes(q) || (r.contact_name || "").toLowerCase().includes(q) ||
     (r.subject || "").toLowerCase().includes(q) || (r.body || "").toLowerCase().includes(q);
 }
 

@@ -47,6 +47,18 @@ test("promoteUnknown links past inbox rows to the new contact", () => {
   expect(db.listUnknown().length).toBe(0);
 });
 
+test("inbox list shows the live contact name; renames are reflected", () => {
+  const id = db.upsertInbox({ from_email: "sam@x.com", from_name: "s", subject: "h", body: "b", at: daysAgo(1), external_id: "email:n1" });
+  let rows = db.listInbox();
+  expect(rows.find((r) => r.id === id)!.contact_name).toBeFalsy();
+  const c = db.createContact({ name: "Samuel", email: "sam@x.com" });
+  rows = db.listInbox();
+  expect(rows.find((r) => r.id === id)!.contact_name).toBe("Samuel");
+  db.updateContact(c.id, { name: "Sammy" });
+  rows = db.listInbox();
+  expect(rows.find((r) => r.id === id)!.contact_name).toBe("Sammy");
+});
+
 test("editing a contact to add an email links past inbox rows", () => {
   const id = db.upsertInbox({ from_email: "kim@x.com", subject: "h", body: "b", at: daysAgo(1), external_id: "email:k1" });
   const c = db.createContact({ name: "Kim" }); // no email yet
