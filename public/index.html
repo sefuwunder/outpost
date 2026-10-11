@@ -123,6 +123,16 @@
   </div>
   <div class="secttl">Email · <span class="cfgdot" id="cfg-email">off</span></div>
   <fieldset class="card">
+    <label><span class="lab">Provider</span><select id="s-email_provider">
+      <option value="manual">Manual IMAP/SMTP</option>
+      <option value="goa">GNOME Online Accounts</option>
+    </select></label>
+    <div id="goa-box" hidden>
+      <label><span class="lab">GOA account</span><select id="s-goa_account"><option value="">Loading…</option></select></label>
+      <div class="testrow"><span>GOA connection</span><span class="testout" id="tout-goa"></span><button id="btn-goa-test" type="button">Test</button></div>
+      <p class="sectnote" id="goa-note">Uses your GNOME Online Accounts — tokens stay in the GNOME keyring, outpost never stores them.</p>
+    </div>
+    <div id="manual-mail">
     <label><span class="lab">IMAP host</span><input id="s-imap_host" placeholder="imap.example.com"></label>
     <label><span class="lab">IMAP port</span><input id="s-imap_port" inputmode="numeric" placeholder="993"></label>
     <label><span class="lab">IMAP user</span><input id="s-imap_user" autocomplete="username"></label>
@@ -138,6 +148,7 @@
     <label><span class="lab">SMTP user</span><input id="s-smtp_user"></label>
     <label><span class="lab">SMTP password</span><input id="s-smtp_pass" type="password"></label>
     <label><span class="lab">From address</span><input id="s-smtp_from" placeholder="you@example.com"></label>
+    </div>
     <div class="testrow"><span>Connection</span><span class="testout" id="tout-email"></span><button data-test="email" type="button">Test</button></div>
   </fieldset>
   <div class="secttl">SMS · <span class="cfgdot" id="cfg-sms">off</span></div>

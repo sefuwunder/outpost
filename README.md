@@ -27,6 +27,13 @@ SMTP security auto-detects from the port (465 → implicit SSL, anything else �
 STARTTLS); override it with the SMTP security selector if your provider needs
 something specific.
 
+**GNOME Online Accounts (optional):** on a GNOME desktop you can skip manual
+IMAP/SMTP entirely — pick *GNOME Online Accounts* as the email provider in ⚙️
+Channels and choose one of your Mail-enabled accounts. Outpost reads the
+account's servers from goa-daemon and fetches a fresh OAuth2 token (or stored
+password) from the GNOME keyring on demand; nothing credential-like is ever
+written to outpost's database.
+
 ## How it works
 
 - **Conversation list** — every contact's unified thread, sorted by recency,
@@ -151,5 +158,5 @@ outranked only by your explicit corrections.
 ## Tests
 
 ```bash
-bun test   # 52 tests — imap backfill, inbox, jev model, agent rules + training rules + reorganize, smtp, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
+bun test   # 107 tests — imap backfill, inbox, jev model, agent rules + training rules + reorganize, smtp, vcf parser, import dedupe, clear-all, db CRUD/dedupe/unread, channel routing, poll matching
 ```

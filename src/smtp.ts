@@ -1,5 +1,6 @@
 // Zero-dependency SMTP client for Relay: plain, STARTTLS, or implicit TLS.
 // Used for email sends and for SMS-via-Google-Voice (email to the GV gateway).
+import { xoauth2Blob } from "./imap";
 
 export class SmtpError extends Error {
   status: number;
@@ -18,6 +19,8 @@ export interface SmtpConfig {
   secure: SmtpSecure;
   user: string;
   pass: string;
+  /** OAuth2 access token: when set, authenticates with AUTH XOAUTH2 instead of AUTH LOGIN. */
+  xoauth2Token?: string;
   from: string; // envelope + From: address, e.g. you@gmail.com
   fromName?: string;
 }
@@ -133,6 +136,18 @@ class SmtpConn {
     await this.cmd(250, "EHLO relay");
   }
 
+  /** SASL XOAUTH2 with the initial-response form. A 334 challenge after the
+   *  initial response means failure details — abort and surface the error. */
+  async authXoauth2(user: string, token: string): Promise<void> {
+    this.sock.write(`AUTH XOAUTH2 ${xoauth2Blob(user, token)}\r\n`);
+    let r = await this.readReply();
+    if (r.code === 334) {
+      this.sock.write(`\r\n`);
+      r = await this.readReply();
+    }
+    if (r.code !== 235) throw new SmtpError(r.code, `SMTP XOAUTH2 failed: ${r.text.split("\n")[0]}`);
+  }
+
   close() {
     try { this.sock?.close(); } catch { /* noop */ }
   }
@@ -236,7 +251,9 @@ export async function sendMail(cfg0: SmtpConfig, opts: SendMailOpts): Promise<{ 
       await conn.startTls(cfg.host, cfg.port || 587);
       await conn.cmd(250, `EHLO relay`);
     }
-    if (cfg.user) {
+    if (cfg.xoauth2Token) {
+      await conn.authXoauth2(cfg.user, cfg.xoauth2Token);
+    } else if (cfg.user) {
       await conn.cmd(334, "AUTH LOGIN");
       await conn.cmd(334, b64(cfg.user));
       await conn.cmd(235, b64(cfg.pass));
@@ -274,7 +291,9 @@ export async function validateSmtp(cfg: SmtpConfig): Promise<{ ok: true }> {
       await conn.startTls(cfg.host, cfg.port || 587);
       await conn.cmd(250, "EHLO relay");
     }
-    if (cfg.user) {
+    if (cfg.xoauth2Token) {
+      await conn.authXoauth2(cfg.user, cfg.xoauth2Token);
+    } else if (cfg.user) {
       await conn.cmd(334, "AUTH LOGIN");
       await conn.cmd(334, b64(cfg.user));
       await conn.cmd(235, b64(cfg.pass));

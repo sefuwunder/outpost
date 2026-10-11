@@ -20,6 +20,8 @@ export interface ImapConfig {
   user: string;
   pass: string;
   secure?: boolean; // default true; false = plain TCP (test stub only)
+  /** OAuth2 access token: when set, authenticates with SASL XOAUTH2 instead of LOGIN. */
+  xoauth2Token?: string;
   /** Mailbox polled for note-style emails (Apple Mail "Notes" convention). Default "Notes". */
   notes_folder?: string;
 }
@@ -263,14 +265,37 @@ function cfgOk(c: ImapConfig): ImapConfig {
   const user = String(c.user || "").trim();
   if (!host) throw new ImapError(400, "mail host is required");
   if (!user) throw new ImapError(400, "mail username is required");
-  if (!c.pass) throw new ImapError(400, "mail password is required");
+  if (!c.pass && !c.xoauth2Token) throw new ImapError(400, "mail password is required");
   return {
     host,
     port: c.port && Number(c.port) > 0 ? Number(c.port) : 993,
     user,
-    pass: String(c.pass),
+    pass: String(c.pass || ""),
+    xoauth2Token: c.xoauth2Token || undefined,
     secure: c.secure !== false,
   };
+}
+
+/** SASL XOAUTH2 initial client response (RFC 7628 §3.1). */
+export function xoauth2Blob(user: string, token: string): string {
+  return Buffer.from(`user=${user}\x01auth=Bearer ${token}\x01\x01`, "utf8").toString("base64");
+}
+
+/** SASL XOAUTH2 login with the initial-response form. On a "+" challenge
+ *  (failure details), aborts per RFC 7628 and surfaces the tagged error —
+ *  never hangs waiting. */
+async function xoauth2Login(conn: Conn, user: string, token: string): Promise<void> {
+  conn.write(`a001 AUTHENTICATE XOAUTH2 ${xoauth2Blob(user, token)}\r\n`);
+  for (;;) {
+    const line = await conn.readLine();
+    if (line.startsWith("a001 ")) {
+      const rest = line.slice(5);
+      if (/^OK\b/i.test(rest)) return;
+      const msg = rest.replace(/^(NO|BAD)\s*/i, "").trim();
+      throw new ImapError(401, `mail server refused XOAUTH2: ${msg || rest}`);
+    }
+    if (line.startsWith("+")) conn.write(`\r\n`); // abort the exchange
+  }
 }
 
 /** Connect and log in without selecting a mailbox. */
@@ -284,7 +309,8 @@ async function connectAndLogin(cfg0: ImapConfig): Promise<{ conn: Conn; cfg: Ima
     throw new ImapError(502, `mail server did not greet properly: ${greet.slice(0, 80)}`);
   }
   try {
-    await conn.cmd("a001", `LOGIN ${qstr(cfg.user)} ${qstr(cfg.pass)}`);
+    if (cfg.xoauth2Token) await xoauth2Login(conn, cfg.user, cfg.xoauth2Token);
+    else await conn.cmd("a001", `LOGIN ${qstr(cfg.user)} ${qstr(cfg.pass)}`);
   } catch (e) {
     conn.close();
     throw e;

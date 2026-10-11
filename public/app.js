@@ -617,6 +617,8 @@ $("btn-settings").addEventListener("click", async () => {
     $("s-" + k).value = s.values[k] || "";
   $("s-llm_enabled").checked = s.values["llm_enabled"] === "1";
   $("s-smtp_secure").value = s.values["smtp_secure"] || "";
+  $("s-email_provider").value = s.values["email_provider"] || "manual";
+  await loadGoaAccounts(s.values["goa_account"] || "");
   $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = ""; $("s-e2ee_token").value = "";
   for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured], ["e2ee", s.e2ee_configured], ["llm", s.llm_configured]]) {
     const el = $("cfg-" + k);
@@ -647,12 +649,52 @@ async function renderRulesList() {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "email_provider", "goa_account", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
     payload[k] = $("s-" + k).value;
   payload["llm_enabled"] = $("s-llm_enabled").checked ? "1" : "0";
   for (const k of ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"]) if (!payload[k]) delete payload[k];
   await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   $("btn-settings").click();
+});
+function updateMailProviderUI() {
+  const goa = $("s-email_provider").value === "goa";
+  $("goa-box").hidden = !goa;
+  $("manual-mail").hidden = goa;
+}
+$("s-email_provider").addEventListener("change", updateMailProviderUI);
+
+async function loadGoaAccounts(selected) {
+  updateMailProviderUI();
+  const sel = $("s-goa_account");
+  const note = $("goa-note");
+  try {
+    const r = await api("/api/goa/accounts");
+    if (!r.available) {
+      sel.innerHTML = `<option value="">Not available</option>`;
+      note.textContent = "GNOME Online Accounts isn't reachable (no GNOME session or goa-daemon not running).";
+      return;
+    }
+    if (!r.accounts.length) {
+      sel.innerHTML = `<option value="">No mail accounts</option>`;
+      note.textContent = "No GNOME accounts with Mail enabled. Add one in GNOME Settings → Online Accounts.";
+      return;
+    }
+    sel.innerHTML = r.accounts.map((a) =>
+      `<option value="${esc(a.id)}"${a.id === selected ? " selected" : ""}>${esc(a.email)} (${esc(a.providerName)})</option>`).join("");
+    note.textContent = "Uses your GNOME Online Accounts — tokens stay in the GNOME keyring, outpost never stores them.";
+  } catch (e) {
+    sel.innerHTML = `<option value="">Couldn't load</option>`;
+    note.textContent = "Couldn't reach GNOME Online Accounts: " + e.message;
+  }
+}
+$("btn-goa-test").addEventListener("click", async () => {
+  const out = $("tout-goa");
+  out.textContent = "…"; out.className = "testout";
+  try {
+    const r = await api("/api/goa/test", { method: "POST", body: JSON.stringify({ account_id: $("s-goa_account").value }) });
+    out.textContent = r.ok ? "✓ " + (r.email || "") : "✗ " + (r.error || "");
+    out.className = "testout " + (r.ok ? "ok" : "err");
+  } catch (e) { out.textContent = "✗ " + e.message; out.className = "testout err"; }
 });
 document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", async () => {
   const out = $("tout-" + b.dataset.test);

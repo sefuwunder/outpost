@@ -18,8 +18,9 @@ const SETTING_KEYS = new Set([
   "matrix_homeserver", "matrix_token", "matrix_user_id",
   "e2ee_url", "e2ee_token", "e2ee_handle",
   "llm_url", "llm_model", "llm_enabled", "llm_threshold", "llm_timeout",
+  "email_provider", "goa_account",
 ]);
-const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_secure", "matrix_homeserver", "matrix_user_id", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_enabled", "llm_threshold", "llm_timeout"];
+const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_secure", "matrix_homeserver", "matrix_user_id", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_enabled", "llm_threshold", "llm_timeout", "email_provider", "goa_account"];
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
@@ -203,12 +204,59 @@ Bun.serve({
           }
           const im = await import("./imap");
           const sm = await import("./smtp");
-          const imapCfg = { host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993), user: getSetting("imap_user"), pass: getSetting("imap_pass") };
-          const smtpPort = Number(getSetting("smtp_port") || 587);
-          const smtpCfg = { host: getSetting("smtp_host"), port: smtpPort, user: getSetting("smtp_user"), pass: getSetting("smtp_pass"), from: getSetting("smtp_from") || getSetting("imap_user"), secure: sm.smtpSecureMode(getSetting("smtp_secure"), smtpPort) };
+          const ch = await import("./channels");
+          const imapCfg = await ch.emailImapConfig();
+          const smtpCfg = await ch.emailSmtpConfig();
           if (which === "email") { await im.validateImap(imapCfg); await sm.validateSmtp(smtpCfg); }
           else { await sm.validateSmtp(smtpCfg); await im.validateImap(imapCfg); } // sms rides both
           return json({ ok: true });
+        } catch (e: any) {
+          return json({ ok: false, error: String(e?.message || e).slice(0, 300) });
+        }
+      }
+      if (p === "/api/goa/accounts" && req.method === "GET") {
+        try {
+          const goa = await import("./goa");
+          const available = await goa.goaAvailable();
+          const accounts = available ? await goa.listGoaMailAccounts() : [];
+          return json({
+            available,
+            accounts: accounts.map((a) => ({
+              id: a.id, email: a.email, providerName: a.providerName,
+              providerType: a.providerType, oauth2: a.oauth2,
+            })),
+          });
+        } catch (e: any) {
+          return json({ available: false, accounts: [], error: String(e?.message || e).slice(0, 200) });
+        }
+      }
+      if (p === "/api/goa/test" && req.method === "POST") {
+        try {
+          const b = await req.json().catch(() => ({})) as { account_id?: string };
+          const goa = await import("./goa");
+          const ch = await import("./channels");
+          if (!await goa.goaAvailable())
+            return json({ ok: false, error: "GNOME Online Accounts not reachable — is this a GNOME session?" });
+          const accounts = await goa.listGoaMailAccounts();
+          const acct = accounts.find((a) => a.id === (b.account_id || ""));
+          if (!acct) return json({ ok: false, error: "account not found — is it still enabled for Mail in GNOME Settings?" });
+          const creds = await goa.getGoaCredentials(acct);
+          const im = await import("./imap");
+          const sm = await import("./smtp");
+          const ic = goa.goaImapCfg(acct);
+          const sc = goa.goaSmtpCfg(acct);
+          await im.validateImap({
+            host: ic.host, port: ic.port, user: creds.user,
+            pass: creds.imapPassword || "",
+            xoauth2Token: creds.oauth2 ? creds.token : undefined, secure: ic.secure,
+          });
+          await sm.validateSmtp({
+            host: sc.host, port: sc.port, user: creds.user,
+            pass: creds.smtpPassword || "",
+            xoauth2Token: creds.oauth2 ? creds.token : undefined,
+            from: acct.email, secure: sc.secure,
+          });
+          return json({ ok: true, email: acct.email });
         } catch (e: any) {
           return json({ ok: false, error: String(e?.message || e).slice(0, 300) });
         }

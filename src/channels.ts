@@ -7,7 +7,9 @@ import {
   getE2EEState, setE2EEState, delE2EEState,
   type Channel, type Contact,
 } from "./db";
-import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail } from "./imap";
+import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail, type ImapConfig } from "./imap";
+import type { SmtpConfig } from "./smtp";
+import type { RunFn } from "./goa";
 
 export interface Transports {
   sendEmail(to: string, subject: string, text: string): Promise<void>;
@@ -171,15 +173,73 @@ function ingestGvSms(m: UnseenMail, digits: string, at: string, report: PollRepo
  *  Read-only on the server (no flags touched). Bounded by limit. */
 export async function backfillInbox(days = 30, limit = 200, secure = true): Promise<PollReport> {
   const imap = require("./imap") as typeof import("./imap");
-  if (!getSetting("imap_host") || !getSetting("imap_user"))
+  if (!emailReady())
     throw new Error("email not configured — add it in ⚙️ Channels first");
   const report: PollReport = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
-  const cfg = {
-    host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993),
-    user: getSetting("imap_user"), pass: getSetting("imap_pass"), secure,
-  };
+  const cfg = { ...(await emailImapConfig()), secure };
   for (const m of await imap.fetchRecent(cfg, days, limit, "INBOX")) ingestEmail(m, report);
   return report;
+}
+
+/** Email provider: "manual" IMAP/SMTP settings, or "goa" for GNOME Online Accounts. */
+export function emailProvider(): "manual" | "goa" {
+  return getSetting("email_provider") === "goa" ? "goa" : "manual";
+}
+
+/** True when the email channel can be used. */
+export function emailReady(): boolean {
+  if (emailProvider() === "goa") return !!getSetting("goa_account");
+  return !!(getSetting("imap_host") && getSetting("imap_user"));
+}
+
+async function goaAccountOrThrow(run?: RunFn) {
+  const goa = await import("./goa");
+  const id = getSetting("goa_account");
+  if (!id) throw new Error("GNOME Online Accounts selected but no account chosen — pick one in ⚙️ Channels");
+  const accts = await goa.listGoaMailAccounts(run);
+  const acct = accts.find((a) => a.id === id);
+  if (!acct) throw new Error(`GNOME account "${id}" is gone — is it still enabled for Mail?`);
+  return { acct, creds: await goa.getGoaCredentials(acct, run), goa };
+}
+
+/** IMAP config from the active email provider (manual settings or GOA). */
+export async function emailImapConfig(run?: RunFn): Promise<ImapConfig> {
+  if (emailProvider() === "goa") {
+    const { acct, creds, goa } = await goaAccountOrThrow(run);
+    const c = goa.goaImapCfg(acct);
+    return {
+      host: c.host, port: c.port, user: creds.user,
+      pass: creds.imapPassword || "",
+      xoauth2Token: creds.oauth2 ? creds.token : undefined,
+      secure: c.secure,
+    };
+  }
+  return {
+    host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993),
+    user: getSetting("imap_user"), pass: getSetting("imap_pass"),
+  };
+}
+
+/** SMTP config from the active email provider (manual settings or GOA). */
+export async function emailSmtpConfig(run?: RunFn): Promise<SmtpConfig> {
+  const smtp = require("./smtp") as typeof import("./smtp");
+  if (emailProvider() === "goa") {
+    const { acct, creds, goa } = await goaAccountOrThrow(run);
+    const c = goa.goaSmtpCfg(acct);
+    return {
+      host: c.host, port: c.port, user: creds.user,
+      pass: creds.smtpPassword || "",
+      xoauth2Token: creds.oauth2 ? creds.token : undefined,
+      from: acct.email, secure: c.secure,
+    };
+  }
+  const port = Number(getSetting("smtp_port") || 587);
+  return {
+    host: getSetting("smtp_host"), port,
+    user: getSetting("smtp_user"), pass: getSetting("smtp_pass"),
+    from: getSetting("smtp_from") || getSetting("imap_user"),
+    secure: smtp.smtpSecureMode(getSetting("smtp_secure"), port),
+  };
 }
 
 /** One inbound sweep across every configured channel. Best-effort per channel. */
@@ -274,16 +334,6 @@ export function realTransports(): Transports {
   const smtp = require("./smtp") as typeof import("./smtp");
   const matrix = require("./matrix") as typeof import("./matrix");
 
-  const imapCfg = () => ({
-    host: getSetting("imap_host"), port: Number(getSetting("imap_port") || 993),
-    user: getSetting("imap_user"), pass: getSetting("imap_pass"),
-  });
-  const smtpCfg = () => ({
-    host: getSetting("smtp_host"), port: Number(getSetting("smtp_port") || 587),
-    user: getSetting("smtp_user"), pass: getSetting("smtp_pass"),
-    from: getSetting("smtp_from") || getSetting("imap_user"),
-    secure: smtp.smtpSecureMode(getSetting("smtp_secure"), Number(getSetting("smtp_port") || 587)),
-  });
   const matrixCfg = () => ({
     homeserver: getSetting("matrix_homeserver"),
     token: getSetting("matrix_token"),
@@ -292,10 +342,10 @@ export function realTransports(): Transports {
 
   return {
     sendEmail: async (to, subject, text) => {
-      await smtp.sendMail(smtpCfg(), { to, subject: subject || "outpost", text });
+      await smtp.sendMail(await emailSmtpConfig(), { to, subject: subject || "outpost", text });
     },
     sendSms: async (digits, text) => {
-      await smtp.sendMail(smtpCfg(), { to: smtp.gvGatewayAddress(digits), subject: "outpost", text });
+      await smtp.sendMail(await emailSmtpConfig(), { to: smtp.gvGatewayAddress(digits), subject: "outpost", text });
     },
     sendMatrix: async (contact, text) => {
       const roomId = getSetting(`matrix_room:${contact.id}`);
@@ -308,15 +358,16 @@ export function realTransports(): Transports {
       await c!.send(handle, text);
     },
     fetchEmail: async () => {
-      if (!getSetting("imap_host") || !getSetting("imap_user")) return [];
-      return imap.fetchUnseen(imapCfg(), 50, "INBOX", 4000);
+      if (!emailReady()) return [];
+      return imap.fetchUnseen(await emailImapConfig(), 50, "INBOX", 4000);
     },
     fetchSms: async () => {
-      if (!getSetting("imap_host") || !getSetting("imap_user")) return [];
-      const harvest = await imap.harvestRecentSms(imapCfg(), 2);
+      if (!emailReady()) return [];
+      const icfg = await emailImapConfig();
+      const harvest = await imap.harvestRecentSms(icfg, 2);
       const out: Array<{ number: string; name: string; body: string; at: string; messageId: string }> = [];
       for (const h of harvest.conversations) {
-        const ctx = await imap.latestEmailWith(imapCfg(), `${h.number}@txt.voice.google.com`, 1500).catch(() => null);
+        const ctx = await imap.latestEmailWith(icfg, `${h.number}@txt.voice.google.com`, 1500).catch(() => null);
         // Dedupe-safe: the real message-id lets addMessage skip forwards that
         // ingestEmail already filed as SMS.
         if (ctx?.snippet) out.push({ number: h.number, name: h.name, body: stripGvFooter(ctx.snippet).trim() || "(empty SMS)", at: ctx.dateTime || ctx.date || new Date().toISOString(), messageId: ctx.messageId || "" });

@@ -212,8 +212,10 @@ export function setSetting(key: string, value: string): void {
 export function publicSettings(): Record<string, boolean> {
   // booleans only — secrets never leave the server
   return {
-    email_configured: !!(getSetting("imap_host") && getSetting("imap_user")),
-    sms_configured: !!(getSetting("smtp_host") && getSetting("imap_host")),
+    email_configured: !!((getSetting("imap_host") && getSetting("imap_user")) ||
+      (getSetting("email_provider") === "goa" && getSetting("goa_account"))),
+    sms_configured: !!((getSetting("smtp_host") && getSetting("imap_host")) ||
+      (getSetting("email_provider") === "goa" && getSetting("goa_account"))),
     matrix_configured: !!(getSetting("matrix_homeserver") && getSetting("matrix_token")),
     e2ee_configured: !!((getSetting("e2ee_url") || getSetting("e2ee_token")) && getSetting("e2ee_handle")),
     llm_configured: getSetting("llm_enabled") === "1",
