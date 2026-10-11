@@ -54,8 +54,9 @@ body {
 .navtitle { flex: 1; text-align: center; }
 .navtitle h1 { margin: 0; font-size: 17px; font-weight: 600; }
 .navtitle .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
-.bigtitle { padding: 6px 16px 8px; }
+.bigtitle { padding: 6px 16px 8px; display: flex; align-items: center; gap: 14px; }
 .bigtitle h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -0.5px; }
+#mood { width: 120px; height: 64px; image-rendering: pixelated; border-radius: 10px; box-shadow: 0 1px 5px rgba(0,0,0,.18); flex: none; }
 
 /* ---------- conversation list ---------- */
 .view { flex: 1; overflow-y: auto; display: flex; flex-direction: column; background: var(--bg); }

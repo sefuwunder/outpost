@@ -17,7 +17,7 @@ const CHIPS = [
   { id: "receipt", label: "Receipts" },
   { id: "automated", label: "Automated" },
 ];
-const state = { view: "list", tab: "inbox", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [], inbox: null, email: null, secCollapsed: { newsletter: true, receipt: true, automated: true }, selecting: false, selected: new Set() };
+const state = { view: "list", tab: "inbox", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [], inbox: null, email: null, secCollapsed: { newsletter: true, receipt: true, automated: true }, selecting: false, selected: new Set(), inboxUnread: 0 };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const initials = (n) => n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?";
@@ -48,6 +48,7 @@ async function loadConversations() {
   const { conversations } = await api("/api/conversations");
   state.convs = conversations;
   renderList();
+  updateMood();
 }
 
 function renderChips() {
@@ -353,7 +354,9 @@ async function loadInbox() {
   const r = await api("/api/inbox");
   state.inbox = r.sections;
   state.priority = r.priority || [];
+  state.inboxUnread = r.unread || 0;
   renderInbox();
+  updateMood();
 }
 function renderPriority() {
   const items = (state.priority || []).filter((p) => !state.q.trim() || matchInbox(p, state.q.trim().toLowerCase()));
@@ -487,6 +490,7 @@ async function loadNudges() {
   const badge = $("nudge-badge");
   badge.hidden = !nudges.length;
   badge.textContent = nudges.length > 9 ? "9+" : nudges.length;
+  updateMood();
   if (state.view === "list") renderList(); // refresh "needs reply" markers
   $("nudge-list").innerHTML = nudges.map((n) => `
     <div class="nudge-card" data-id="${n.id}">
@@ -689,6 +693,130 @@ async function refresh() {
 }
 setInterval(() => { if (state.view === "list") refresh(); }, 30_000);
 setInterval(() => { if (state.view === "thread" && state.thread) openThread(state.thread.conversation.id); }, 15_000);
+
+// ---------- 16-bit mood scene: system state as pixel art ----------
+// Light theme: daytime streetscape — houses and people scale with activity
+// (unread messages + nudges). Dark theme: night beach — stars scale with
+// activity. Animates only as feedback for changing system state; static
+// otherwise. Honors prefers-reduced-motion.
+const MOOD_PX = 4, MOOD_GW = 30, MOOD_GH = 16;
+const mood = { unread: -1, nudges: -1, dark: false, raf: 0, layoutKey: "", layout: null };
+const MOOD_REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function moodLayout(dark, activity){
+  const key = (dark ? "n" : "d") + activity;
+  if(mood.layoutKey === key) return mood.layout;
+  const rnd = mulberry32(activity * 7919 + 101);
+  const L = { clouds: [], houses: [], people: [], stars: [], waves: [] };
+  if(!dark){
+    const nC = 2 + Math.floor(rnd() * 2);
+    for(let i = 0; i < nC; i++) L.clouds.push({ x: Math.floor(rnd() * 26), y: 1 + Math.floor(rnd() * 3) });
+    const nH = 2 + Math.min(3, Math.floor(activity / 4));
+    const bodies = ["#e07a5f", "#f2cc8f", "#81b29d", "#f4f1de", "#e9c46a"];
+    const roofs = ["#9d0208", "#6d6875", "#7f4f24", "#5e503f", "#9d0208"];
+    for(let i = 0; i < nH; i++){
+      const x = i * 6;
+      if(x + 5 > 30) break;
+      L.houses.push({ x, body: bodies[i % 5], roof: roofs[i % 5] });
+    }
+    const nP = Math.min(6, activity);
+    const shirts = ["#e63946", "#457b9d", "#2a9d8f", "#f4a261", "#9d4edd", "#e9c46a"];
+    for(let i = 0; i < nP; i++) L.people.push({ x: Math.floor(rnd() * 30), shirt: shirts[i % 6], speed: 1 + (i % 2) });
+  } else {
+    const nS = 10 + Math.min(50, activity * 3);
+    for(let i = 0; i < nS; i++) L.stars.push({ x: Math.floor(rnd() * 30), y: Math.floor(rnd() * 9), warm: rnd() < 0.25 });
+    for(let i = 0; i < 3; i++) L.waves.push({ x: Math.floor(rnd() * 26) });
+  }
+  mood.layoutKey = key; mood.layout = L; return L;
+}
+function moodDraw(dark, activity, frame){
+  const cv = $("mood"); if(!cv) return;
+  const g = cv.getContext("2d");
+  const R = (x, y, w, h, c) => { g.fillStyle = c; g.fillRect(Math.round(x * MOOD_PX), Math.round(y * MOOD_PX), Math.ceil(w * MOOD_PX), Math.ceil(h * MOOD_PX)); };
+  const L = moodLayout(dark, activity);
+  if(!dark){
+    R(0, 0, 30, 3, "#79c7f2"); R(0, 3, 30, 3, "#a5ddfb"); R(0, 6, 30, 2, "#d3eefd");
+    R(24, 1, 3, 3, "#ffd60a");
+    R(25, 0, 1, 1, "#ffea70"); R(23, 2, 1, 1, "#ffea70"); R(27, 2, 1, 1, "#ffea70"); R(25, 4, 1, 1, "#ffea70");
+    const drift = frame > 0 ? Math.floor(frame / 12) : 0;
+    for(const c of L.clouds){
+      const x = (((c.x + drift) % 34) + 34) % 34 - 2;
+      R(x, c.y, 5, 1, "#ffffff"); R(x + 1, c.y + 1, 3, 1, "#f1f8ff");
+    }
+    for(const h of L.houses){
+      R(h.x + 3, 7, 1, 2, "#8d99ae");
+      R(h.x + 1, 8, 3, 1, h.roof); R(h.x, 9, 5, 1, h.roof);
+      R(h.x, 10, 5, 2, h.body);
+      R(h.x + 2, 10, 1, 2, "#5e503f");
+      R(h.x, 10, 1, 1, "#caf0f8"); R(h.x + 4, 10, 1, 1, "#caf0f8");
+    }
+    R(0, 12, 30, 1, "#74a12e");
+    R(0, 13, 30, 2, "#6c757d");
+    for(let x = 1; x < 29; x += 4) R(x, 13, 2, 1, "#dee2e6");
+    R(0, 15, 30, 1, "#adb5bd");
+    for(let i = 0; i < L.people.length; i++){
+      const p = L.people[i];
+      const x = frame > 0 ? (((p.x + Math.floor(frame / 8) * p.speed) % 32) + 32) % 32 - 1 : p.x;
+      const step = frame > 0 && (Math.floor(frame / 6) + i) % 2 === 0;
+      R(x, 14, 1, 1, step ? "#2b2d42" : "#343a40");
+      R(x, 13, 1, 1, p.shirt);
+      R(x, 12, 1, 1, "#f1c27d");
+    }
+  } else {
+    R(0, 0, 30, 4, "#0b132b"); R(0, 4, 30, 3, "#141c3f"); R(0, 7, 30, 3, "#1c2541");
+    R(3, 1, 3, 3, "#f8f9fa"); R(4, 2, 1, 1, "#dee2e6"); R(3, 3, 1, 1, "#e9ecef");
+    for(let i = 0; i < L.stars.length; i++){
+      const st = L.stars[i];
+      const tw = frame > 0 && ((i + Math.floor(frame / 8)) % 6 === 0);
+      R(st.x, st.y, 1, 1, tw ? "#fff3b0" : (st.warm ? "#ffe66d" : "#e0fbfc"));
+    }
+    R(0, 10, 30, 2, "#1d3557");
+    for(const w of L.waves) R(w.x, 10, 3, 1, "#457b9d");
+    const shim = frame > 0 ? (((frame >> 3) % 2) === 0 ? "#e0fbfc" : "#98c1d9") : "#98c1d9";
+    R(3, 10, 2, 1, shim); R(4, 11, 1, 1, shim);
+    R(0, 12, 30, 1, "#e9d8a6"); R(0, 13, 30, 3, "#d4a373");
+    R(24, 7, 5, 1, "#40916c");
+    R(22, 8, 8, 1, "#2d6a4f");
+    R(22, 9, 2, 1, "#2d6a4f"); R(28, 9, 2, 1, "#2d6a4f");
+    R(25, 9, 1, 1, "#6f4518");
+    R(26, 9, 1, 2, "#9c6644"); R(26, 11, 1, 4, "#9c6644");
+    if(frame > 0){
+      const nSt = 1 + (activity >= 8 ? 1 : 0);
+      for(let s = 0; s < nSt; s++){
+        const ph = (((frame / 70) + s * 0.55) % 1 + 1) % 1;
+        const hx = 32 - ph * 38, hy = 1 + ph * 7;
+        for(let k = 0; k < 5; k++){
+          R(hx + k, hy + k * 0.5, 1, 1, k === 0 ? "#ffffff" : "rgba(224,251,252," + (1 - k / 5).toFixed(2) + ")");
+        }
+      }
+    }
+  }
+}
+function moodPulse(){
+  if(mood.raf) cancelAnimationFrame(mood.raf);
+  const t0 = performance.now(), DUR = 2600, act = mood.unread + mood.nudges, dark = mood.dark;
+  const tick = (t) => {
+    const el = t - t0;
+    if(el >= DUR){ moodDraw(dark, act, 0); mood.raf = 0; return; }
+    moodDraw(dark, act, 1 + Math.floor(el / 60));
+    mood.raf = requestAnimationFrame(tick);
+  };
+  mood.raf = requestAnimationFrame(tick);
+}
+function updateMood(){
+  const cv = $("mood"); if(!cv) return;
+  const chatUnread = (state.convs || []).reduce((s, c) => s + (c.unread || 0), 0);
+  const unread = chatUnread + (state.inboxUnread || 0);
+  const nudges = (state.nudges || []).length;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const changed = unread !== mood.unread || nudges !== mood.nudges || dark !== mood.dark;
+  const first = mood.unread < 0;
+  mood.unread = unread; mood.nudges = nudges; mood.dark = dark;
+  moodDraw(dark, unread + nudges, 0);
+  cv.setAttribute("aria-label", "System mood: " + unread + " unread, " + nudges + " nudges");
+  if(changed && !first && !MOOD_REDUCED && !document.hidden) moodPulse();
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", updateMood);
 
 setTab("inbox");
 loadNudges();
