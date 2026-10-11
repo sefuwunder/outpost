@@ -90,8 +90,11 @@ Bun.serve({
       if (m && req.method === "POST") {
         const body = await req.json().catch(() => ({})) as { channel?: string; body?: string };
         const channel = body.channel as Channel;
-        if (!["email", "sms", "matrix"].includes(channel)) return bad("bad channel");
-        const r = await sendToContact(realTransports(), convIdToContact(m[1]), channel, body.body || "");
+        if (!["email", "sms", "matrix", "encrypted"].includes(channel)) return bad("bad channel");
+        const contactId = convIdToContact(m[1]);
+        const contact = getContact(contactId);
+        if (contact && !availableChannels(contact).includes(channel)) return bad("channel not available for this contact");
+        const r = await sendToContact(realTransports(), contactId, channel, body.body || "");
         return json(r, r.ok ? 200 : 422);
       }
       if (p === "/api/contacts" && req.method === "GET") {

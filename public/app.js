@@ -123,8 +123,11 @@ async function loadUnknown() {
 
 async function openThread(convId) {
   const { conversation, contact, messages, channels } = await api(`/api/conversations/${convId}`);
+  const switching = !state.thread || state.thread.conversation.id !== convId;
   state.thread = { conversation, contact, messages };
-  state.channel = channels[0] || null;
+  // Never clobber the user's channel pick on refresh — only default when
+  // opening a different thread or when the pick is no longer available.
+  state.channel = resolveChannel(channels, state.channel, switching);
   $("thread-name").textContent = contact.name;
   $("thread-avatar").textContent = initials(contact.name);
   $("thread-avatar").style.cssText = avatarStyle(contact.name);
@@ -335,6 +338,14 @@ function matchInbox(r, q) {
   return !q || (r.from_email || "").toLowerCase().includes(q) ||
     (r.from_name || "").toLowerCase().includes(q) ||
     (r.subject || "").toLowerCase().includes(q) || (r.body || "").toLowerCase().includes(q);
+}
+
+/** Pure: which channel should be active after (re)opening a thread?
+ *  Refreshes must never clobber the user's pick (the 15s auto-refresh
+ *  used to flip "encrypted" back to the first channel). */
+function resolveChannel(channels, current, switching) {
+  if (switching || !channels.includes(current)) return channels[0] || null;
+  return current;
 }
 function renderInbox() {
   const q = state.q.trim().toLowerCase();
