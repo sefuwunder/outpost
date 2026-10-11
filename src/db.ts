@@ -126,6 +126,12 @@ export function openDb(path?: string): Database {
   for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
     if (!triCols.some((c) => c.name === col)) db.exec(`ALTER TABLE triage ADD COLUMN ${col} ${def}`);
   }
+  // Migration: materialize inbox emails as thread messages. An earlier
+  // linkInboxToContact set contact_id without filing messages, so "Open
+  // chat" opened empty threads. Idempotent.
+  for (const c of db.query("SELECT id FROM contacts").all() as { id: string }[]) {
+    try { materializeInboxMessages(c.id); } catch { /* per-contact isolation */ }
+  }
   // Migration: recognize Google Voice SMS forwards as SMS, not email.
   // Older runs filed {digits}@txt|mms.voice.google.com forwards as regular email
   // (inbox rows + email-channel unknown senders). Re-label the unknown senders
@@ -264,8 +270,33 @@ export function linkInboxToContact(c: Contact): void {
   const d = getDb();
   d.query("UPDATE inbox SET contact_id = ? WHERE contact_id = '' AND lower(from_email) = lower(?)")
     .run(c.id, c.email);
+  materializeInboxMessages(c.id);
   d.query("DELETE FROM unknown_senders WHERE channel = 'email' AND lower(handle) = lower(?)")
     .run(c.email);
+}
+
+/** Ensure every inbox email filed under a contact exists as a message on the
+ *  contact's thread, so "Open chat" never opens an empty screen. Preserves
+ *  each row's read state and original date. Idempotent. */
+export function materializeInboxMessages(contactId: string): void {
+  const d = getDb();
+  const rows = d.query(
+    `SELECT * FROM inbox WHERE contact_id = ? AND (message_id = '' OR message_id NOT IN (SELECT id FROM messages))`
+  ).all(contactId) as InboxRow[];
+  if (!rows.length) return;
+  const conv = conversationFor(contactId);
+  for (const r of rows) {
+    const ext = r.external_id || `email:backfill-${r.id}`;
+    let msg = addMessage({
+      conversation_id: conv.id, channel: "email", direction: "in",
+      body: r.body, subject: r.subject, external_id: ext, created_at: r.at,
+    });
+    if (!msg && ext) msg = d.query("SELECT * FROM messages WHERE external_id = ?").get(ext) as Message | null;
+    if (msg) {
+      if (r.read) d.query("UPDATE messages SET read = 1 WHERE id = ?").run(msg.id);
+      d.query("UPDATE inbox SET message_id = ? WHERE id = ?").run(msg.id, r.id);
+    }
+  }
 }
 export function updateContact(id: string, patch: Partial<Pick<Contact, "name" | "email" | "phone" | "matrix_id" | "e2ee_handle" | "notes" | "starred" | "archived">>): Contact | null {
   const cur = getContact(id);

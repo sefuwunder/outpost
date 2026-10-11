@@ -47,6 +47,41 @@ test("promoteUnknown links past inbox rows to the new contact", () => {
   expect(db.listUnknown().length).toBe(0);
 });
 
+test("adding a sender as a contact materializes their emails on the thread", () => {
+  // unknown-era emails: inbox rows only, no messages
+  const at1 = daysAgo(2), at2 = daysAgo(1);
+  const id1 = db.upsertInbox({ from_email: "sam@x.com", from_name: "s", subject: "first", body: "one", at: at1, external_id: "email:m1" });
+  const id2 = db.upsertInbox({ from_email: "sam@x.com", from_name: "s", subject: "second", body: "two", at: at2, external_id: "email:m2" });
+  db.setInboxRead(id1, true);
+  const c = db.createContact({ name: "Sam", email: "sam@x.com" });
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.length).toBe(2);
+  expect(msgs.map((m) => m.body).sort()).toEqual(["one", "two"]);
+  expect(msgs.every((m) => m.channel === "email" && m.direction === "in")).toBe(true);
+  expect(msgs.find((m) => m.body === "one")!.created_at).toBe(at1);
+  // read state preserved from the inbox row
+  expect(msgs.find((m) => m.body === "one")!.read).toBe(1);
+  expect(msgs.find((m) => m.body === "two")!.read).toBe(0);
+  // rows linked to the filed messages
+  expect(db.getInbox(id1)!.message_id).toBe(msgs.find((m) => m.body === "one")!.id);
+  expect(db.getInbox(id2)!.message_id).toBe(msgs.find((m) => m.body === "two")!.id);
+  // idempotent: no duplicates on re-run
+  db.materializeInboxMessages(c.id);
+  expect(db.listMessages(db.conversationFor(c.id).id).length).toBe(2);
+});
+
+test("materializeInboxMessages repairs already-linked rows (pre-fix data)", () => {
+  const c = db.createContact({ name: "Pat", email: "pat@x.com" });
+  // simulate the pre-fix linkInboxToContact: contact_id set, no message filed
+  const id = db.upsertInbox({ from_email: "pat@x.com", subject: "h", body: "b", at: daysAgo(1), external_id: "email:pm1" });
+  db.getDb().query("UPDATE inbox SET contact_id = ? WHERE id = ?").run(c.id, id);
+  expect(db.listMessages(db.conversationFor(c.id).id).length).toBe(0);
+  db.materializeInboxMessages(c.id);
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].body).toBe("b");
+});
+
 test("inbox list shows the live contact name; renames are reflected", () => {
   const id = db.upsertInbox({ from_email: "sam@x.com", from_name: "s", subject: "h", body: "b", at: daysAgo(1), external_id: "email:n1" });
   let rows = db.listInbox();
