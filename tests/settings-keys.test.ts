@@ -40,7 +40,8 @@ test("secrets are saveable but never readable", () => {
 test("server keeps long LLM passes alive (no idle-timeout drop)", () => {
   // Regression: Bun's default ~10s idle timeout closed consult/idle-learn
   // connections mid-generation (curl 52 "Empty reply from server").
+  // 0 disables it (verified: a 15s idle request survives); Bun rejects >255.
   const mm = src.match(/Bun\.serve\(\{[\s\S]*?idleTimeout:\s*(\d+)/);
   expect(mm, "idleTimeout set on Bun.serve").toBeTruthy();
-  expect(Number(mm![1])).toBeGreaterThanOrEqual(600);
+  expect(Number(mm![1])).toBe(0);
 });

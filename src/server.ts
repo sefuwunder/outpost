@@ -73,8 +73,9 @@ Bun.serve({
   hostname: "127.0.0.1",
   // LLM consult/idle passes can run for many minutes with no bytes flowing
   // back to the client; Bun's default ~10s idle timeout would drop those
-  // connections mid-pass (curl 52). Localhost-only, so a long leash is fine.
-  idleTimeout: 1800,
+  // connections mid-pass (curl 52). 0 disables the timeout entirely.
+  // (Bun rejects values above 255.) Localhost-only, so no leash is fine.
+  idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url);
     const p = url.pathname;
