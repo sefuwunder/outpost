@@ -16,6 +16,8 @@
 //
 // Tokens/passwords are fetched on demand and never written to outpost's DB.
 
+import { existsSync } from "node:fs";
+
 export class GoaError extends Error {
   kind: "unavailable" | "call-failed" | "no-account" | "auth";
   constructor(kind: GoaError["kind"], msg: string) {
@@ -61,8 +63,26 @@ export type RunFn = (cmd: string, args: string[]) => Promise<{ code: number; std
 
 const BUSCTL_TIMEOUT_MS = 20000;
 
+/** Extra env for busctl: when this process was launched outside the GNOME
+ *  session (no DBUS_SESSION_BUS_ADDRESS), fall back to the standard user
+ *  bus socket so GOA still works. */
+export function busEnv(): Record<string, string> {
+  if (process.env.DBUS_SESSION_BUS_ADDRESS) return {};
+  const uid = process.getuid?.();
+  const sock = uid !== undefined ? `/run/user/${uid}/bus` : "";
+  try {
+    if (sock && existsSync(sock)) {
+      return { DBUS_SESSION_BUS_ADDRESS: `unix:path=${sock}` };
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
 async function defaultRun(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([cmd, ...args], {
+    stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, ...busEnv() },
+  });
   const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* gone */ } }, BUSCTL_TIMEOUT_MS);
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -178,10 +198,15 @@ export async function goaAvailable(run: RunFn = defaultRun): Promise<boolean> {
   }
 }
 
+/** Raw managed objects from goa-daemon (unfiltered). */
+export async function rawGoaObjects(run: RunFn = defaultRun): Promise<Record<string, Record<string, Record<string, any>>>> {
+  return await busCall(run, GOA_BUS, GOA_ROOT, "org.freedesktop.DBus.ObjectManager", "GetManagedObjects") as
+    Record<string, Record<string, Record<string, any>>>;
+}
+
 /** Mail-capable GOA accounts. Throws GoaError("unavailable") when GOA isn't reachable. */
 export async function listGoaMailAccounts(run: RunFn = defaultRun): Promise<GoaMailAccount[]> {
-  const objs = await busCall(run, GOA_BUS, GOA_ROOT, "org.freedesktop.DBus.ObjectManager", "GetManagedObjects") as
-    Record<string, Record<string, Record<string, any>>>;
+  const objs = await rawGoaObjects(run);
   const out: GoaMailAccount[] = [];
   for (const [path, ifaces] of Object.entries(objs || {})) {
     try {
@@ -190,6 +215,51 @@ export async function listGoaMailAccounts(run: RunFn = defaultRun): Promise<GoaM
     } catch { /* skip malformed account entries */ }
   }
   return out;
+}
+
+/** Redacted structural summary of what goa-daemon reports — for debugging
+ *  "no accounts" without leaking emails or tokens. */
+export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, any>> {
+  const info: Record<string, any> = {
+    uid: process.getuid?.(),
+    dbusSessionBusAddressSet: !!process.env.DBUS_SESSION_BUS_ADDRESS,
+    busEnvFallback: busEnv(),
+    busctl: null as string | null,
+    callOk: false,
+    error: null as string | null,
+    objectCount: 0,
+    objects: [] as any[],
+  };
+  try {
+    const v = await run("busctl", ["--version"]);
+    info.busctl = (v.stdout || "").split("\n")[0].slice(0, 40);
+  } catch (e: any) {
+    info.busctl = `missing: ${e?.message || e}`.slice(0, 80);
+  }
+  try {
+    const objs = await rawGoaObjects(run);
+    info.callOk = true;
+    const paths = Object.keys(objs || {});
+    info.objectCount = paths.length;
+    for (const p of paths) {
+      const ifaces = objs[p] || {};
+      const acc = ifaces["org.gnome.OnlineAccounts.Account"] || {};
+      info.objects.push({
+        path: p,
+        interfaces: Object.keys(ifaces),
+        Id: String(acc["Id"] || "").slice(0, 40),
+        ProviderType: String(acc["ProviderType"] || "").slice(0, 30),
+        MailEnabled: acc["MailEnabled"] === true,
+        MailEnabledRaw: typeof acc["MailEnabled"],
+        hasMailIface: "org.gnome.OnlineAccounts.Mail" in ifaces,
+        emailPresent: !!(ifaces["org.gnome.OnlineAccounts.Mail"]?.["EmailAddress"] ||
+          ifaces["org.gnome.OnlineAccounts.Mail"]?.["ImapUserName"] || acc["PresentationIdentity"]),
+      });
+    }
+  } catch (e: any) {
+    info.error = `${e instanceof GoaError ? `[${e.kind}] ` : ""}${String(e?.message || e)}`.slice(0, 300);
+  }
+  return info;
 }
 
 /** Fetch fresh credentials for one account. Tokens come from the keyring via goa-daemon. */

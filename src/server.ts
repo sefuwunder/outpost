@@ -261,6 +261,14 @@ Bun.serve({
           return json({ ok: false, error: String(e?.message || e).slice(0, 300) });
         }
       }
+      if (p === "/api/goa/debug" && req.method === "GET") {
+        try {
+          const goa = await import("./goa");
+          return json(await goa.goaDebug());
+        } catch (e: any) {
+          return json({ error: String(e?.message || e).slice(0, 200) }, 500);
+        }
+      }
       if (p === "/api/poll" && req.method === "POST") {
         await sweep();
         return json({ ok: true, lastPoll });

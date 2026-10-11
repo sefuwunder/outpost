@@ -158,6 +158,21 @@ test("goaImapCfg rejects non-SSL IMAP and missing hosts", async () => {
   expect(() => goa.goaSmtpCfg(noSmtp)).toThrow(/unencrypted/);
 });
 
+test("goaDebug summarizes objects without leaking emails", async () => {
+  const calls: string[] = [];
+  const d = await goa.goaDebug(fakeRun(calls));
+  expect(d.callOk).toBe(true);
+  expect(d.objectCount).toBe(4);
+  const g = d.objects.find((o: any) => o.Id === "goa_account_1001");
+  expect(g.ProviderType).toBe("google");
+  expect(g.MailEnabled).toBe(true);
+  expect(g.hasMailIface).toBe(true);
+  expect(g.emailPresent).toBe(true);
+  expect(JSON.stringify(d)).not.toContain("ada@gmail.com");
+  const nomail = d.objects.find((o: any) => o.Id === "goa_account_1004");
+  expect(nomail.hasMailIface).toBe(false);
+});
+
 test("xoauth2Blob builds the RFC 7628 initial response", () => {
   const blob = imap.xoauth2Blob("ada@gmail.com", "tok123");
   const raw = Buffer.from(blob, "base64").toString("utf8");
