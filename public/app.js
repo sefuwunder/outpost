@@ -17,7 +17,7 @@ const CHIPS = [
   { id: "receipt", label: "Receipts" },
   { id: "automated", label: "Automated" },
 ];
-const state = { view: "list", tab: "inbox", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [], inbox: null, email: null, secCollapsed: { newsletter: true, receipt: true, automated: true } };
+const state = { view: "list", tab: "inbox", convs: [], thread: null, channel: null, editing: null, q: "", chip: "all", nudges: [], inbox: null, email: null, secCollapsed: { newsletter: true, receipt: true, automated: true }, selecting: false, selected: new Set() };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const initials = (n) => n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "?";
@@ -72,12 +72,15 @@ function renderList() {
     list.innerHTML = `<div class="empty">${state.chip === "all" ? "No conversations yet.<br>Tap ＋ to add someone from outside the 8." : "Nothing here."}</div>`;
     return;
   }
+  $("conv-list").classList.toggle("selecting", state.selecting);
   list.innerHTML = rows.map((c) => {
     const cat = c.category || "personal";
     const catpill = cat !== "personal" && c.last_email_msg
       ? `<button class="chanpill catbtn" data-mid="${c.last_email_msg}" data-cat="${cat}">${cat}</button>` : "";
+    const sel = state.selected.has(c.id);
     return `
-    <div class="conv${c.unread ? " unread" : ""}" data-id="${c.id}">
+    <div class="conv${c.unread ? " unread" : ""}${sel ? " sel" : ""}" data-id="${c.id}">
+      ${state.selecting ? `<div class="selcircle${sel ? " on" : ""}">${sel ? "✓" : ""}</div>` : ""}
       <div class="dot"><i></i></div>
       <div class="avatar" style="${avatarStyle(c.contact_name)}">${esc(initials(c.contact_name))}</div>
       <div class="meta">
@@ -87,12 +90,48 @@ function renderList() {
     </div>`;
   }).join("");
   list.querySelectorAll(".conv").forEach((el) =>
-    el.addEventListener("click", () => openThread(el.dataset.id)));
+    el.addEventListener("click", () => state.selecting ? toggleSelect(el.dataset.id) : openThread(el.dataset.id)));
   list.querySelectorAll(".catbtn").forEach((b) => b.addEventListener("click", (e) => {
     e.stopPropagation();
     openTriageSheet(b.dataset.mid, b.dataset.cat);
   }));
 }
+
+// ---------- multi-select delete conversations ----------
+function enterSelect() {
+  state.selecting = true; state.selected = new Set();
+  $("btn-select").textContent = "Done";
+  $("btn-new-contact").style.display = "none";
+  $("selbar").hidden = false;
+  updateSelbar(); renderList();
+}
+function exitSelect() {
+  if (!state.selecting) return;
+  state.selecting = false; state.selected = new Set();
+  $("btn-select").textContent = "Select";
+  $("btn-new-contact").style.display = state.tab === "chats" ? "" : "none";
+  $("selbar").hidden = true;
+  renderList();
+}
+function toggleSelect(id) {
+  if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+  updateSelbar(); renderList();
+}
+function updateSelbar() {
+  const n = state.selected.size;
+  $("sel-count").textContent = n ? `${n} selected` : "Tap conversations to select";
+  $("sel-delete").disabled = !n;
+}
+$("btn-select").addEventListener("click", () => state.selecting ? exitSelect() : enterSelect());
+$("sel-cancel").addEventListener("click", exitSelect);
+$("sel-delete").addEventListener("click", async () => {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} conversation${ids.length === 1 ? "" : "s"}? The message history will be removed. Contacts are kept.`)) return;
+  const r = await api("/api/conversations", { method: "DELETE", body: JSON.stringify({ ids }) });
+  toast(`Deleted ${r.deleted} conversation${r.deleted === 1 ? "" : "s"}.`);
+  exitSelect(); loadConversations();
+});
 
 async function loadUnknown() {
   const { unknown } = await api("/api/unknown");
@@ -302,7 +341,9 @@ function setTab(tab) {
   document.querySelectorAll("#main-seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   $("inbox-pane").hidden = tab !== "inbox";
   $("chats-pane").hidden = tab !== "chats";
-  $("btn-new-contact").style.display = tab === "chats" ? "" : "none";
+  $("btn-new-contact").style.display = tab === "chats" && !state.selecting ? "" : "none";
+  $("btn-select").style.display = tab === "chats" ? "" : "none";
+  if (tab !== "chats") exitSelect();
   if (tab === "inbox") loadInbox(); else loadConversations();
 }
 document.querySelectorAll("#main-seg button").forEach((b) =>

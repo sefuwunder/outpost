@@ -13,6 +13,7 @@
   <div class="row">
     <button id="btn-poll" class="navbtn icon" title="Check for new messages">⟳</button>
     <div class="navtitle"><h1></h1></div>
+    <button id="btn-select" class="navbtn" style="display:none">Select</button>
     <button id="btn-nudges" class="navbtn icon" title="Nudges" style="position:relative">🔔<span id="nudge-badge" class="nbadge" hidden></span></button>
     <button id="btn-contacts" class="navbtn icon" title="Contacts">👥</button>
     <button id="btn-settings" class="navbtn icon" title="Settings">⚙️</button>
@@ -37,13 +38,6 @@
   </div>
   <button id="btn-new-contact" class="fab" title="New contact">＋</button>
 
-<div id="sheet-wrap" class="sheet-wrap" hidden>
-  <div class="sheet">
-    <div class="sheet-title" id="sheet-title"></div>
-    <div id="sheet-body"></div>
-    <button class="sheet-btn dim sheet-cancel" id="sheet-cancel">Cancel</button>
-  </div>
-</div>
 </main>
 
 <main id="view-email" class="view" hidden>
@@ -181,6 +175,20 @@
   <fieldset class="card" id="rules-card"><div id="rules-list" style="padding:11px 0;font-size:15px;color:var(--muted)">No rules yet — correct a label to teach the agent.</div></fieldset>
   <div class="formbtns"><button class="primary" id="btn-save-settings" type="button">Save</button></div>
 </main>
+<!-- global overlays: outside the view mains so no show() hides them -->
+<div id="sheet-wrap" class="sheet-wrap" hidden>
+  <div class="sheet">
+    <div class="sheet-title" id="sheet-title"></div>
+    <div id="sheet-body"></div>
+    <button class="sheet-btn dim sheet-cancel" id="sheet-cancel">Cancel</button>
+  </div>
+</div>
+<div id="selbar" class="selbar" hidden>
+  <button id="sel-delete" class="destructive">Delete</button>
+  <span id="sel-count"></span>
+  <button id="sel-cancel" class="dimbtn">Cancel</button>
+</div>
+
 
 <div id="toast" class="toast"></div>
 

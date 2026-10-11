@@ -279,6 +279,21 @@ export interface ConversationRow extends Conversation {
   last_body: string; last_channel: string; last_direction: string; unread: number;
   category: TriageCategory; last_email_msg: string | null;
 }
+/** Delete whole conversations: message history, nudges, and the thread
+ *  row. Contacts are kept — a new inbound message starts a fresh thread. */
+export function deleteConversations(ids: string[]): number {
+  const d = getDb();
+  let n = 0;
+  d.transaction((list: string[]) => {
+    for (const id of list) {
+      d.query("DELETE FROM messages WHERE conversation_id = ?").run(id);
+      d.query("DELETE FROM nudges WHERE conversation_id = ?").run(id);
+      n += Number(d.query("DELETE FROM conversations WHERE id = ?").run(id).changes);
+    }
+  })(ids);
+  return n;
+}
+
 export function listConversations(): ConversationRow[] {
   return getDb().query(`
     SELECT c.*, ct.name AS contact_name, ct.starred AS contact_starred,

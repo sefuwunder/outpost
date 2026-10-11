@@ -3,7 +3,7 @@ import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listConversations, conversationFor, listMessages, markRead, totalUnread,
   listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
   listActiveNudges, dismissNudge, snoozeNudge, getTriageFull,
-  listInbox, getInbox, setInboxRead, deleteInbox, inboxUnread, mirrorTriage,
+  listInbox, getInbox, setInboxRead, deleteInbox, inboxUnread, mirrorTriage, deleteConversations,
   getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
 
@@ -82,6 +82,12 @@ Bun.serve({
     try {
       if (p === "/api/conversations" && req.method === "GET") {
         return json({ conversations: listConversations(), unread: totalUnread(), lastPoll });
+      }
+      if (p === "/api/conversations" && req.method === "DELETE") {
+        const b = await req.json().catch(() => ({})) as { ids?: string[] };
+        const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string") : [];
+        if (!ids.length) return bad("no ids");
+        return json({ deleted: deleteConversations(ids) });
       }
       let m = p.match(/^\/api\/conversations\/([\w-]+)$/);
       if (m && req.method === "GET") {

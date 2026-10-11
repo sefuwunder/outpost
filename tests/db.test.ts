@@ -25,6 +25,19 @@ test("contacts: create/find/update with normalization", () => {
   expect(u!.name).toBe("Ada L.");
 });
 
+test("deleteConversations removes threads + messages, keeps contacts", () => {
+  const a = db.createContact({ name: "A", email: "a@x.com" });
+  const b = db.createContact({ name: "B", email: "b@x.com" });
+  const ca = db.conversationFor(a.id), cb = db.conversationFor(b.id);
+  db.addMessage({ conversation_id: ca.id, channel: "email", direction: "in", body: "hi a", external_id: "email:da" });
+  db.addMessage({ conversation_id: cb.id, channel: "email", direction: "in", body: "hi b", external_id: "email:db" });
+  expect(db.deleteConversations([ca.id, "nope", cb.id])).toBe(2);
+  expect(db.listConversations().length).toBe(0);
+  expect(db.getDb().query("SELECT COUNT(*) AS n FROM messages").get().n).toBe(0);
+  expect(db.getContact(a.id)!.name).toBe("A"); // contacts kept
+  expect(db.getContact(b.id)!.name).toBe("B");
+});
+
 test("conversationFor is idempotent — one thread per contact", () => {
   const c = db.createContact({ name: "Bo" });
   const a = db.conversationFor(c.id);
