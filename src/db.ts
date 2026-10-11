@@ -161,6 +161,7 @@ export function publicSettings(): Record<string, boolean> {
     sms_configured: !!(getSetting("smtp_host") && getSetting("imap_host")),
     matrix_configured: !!(getSetting("matrix_homeserver") && getSetting("matrix_token")),
     e2ee_configured: !!((getSetting("e2ee_url") || getSetting("e2ee_token")) && getSetting("e2ee_handle")),
+    llm_configured: getSetting("llm_enabled") === "1",
   };
 }
 

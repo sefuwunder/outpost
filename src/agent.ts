@@ -109,7 +109,7 @@ export function reorganizePass(): { reorganized: number } {
   let reorganized = 0;
   const d = getDb();
   const apply = (id: string, mirrorTo: string | undefined, from: string, subject: string, body: string, cur: string | null, src: string | null) => {
-    if (src === "user") return; // explicit corrections are never overwritten
+    if (src === "user" || src === "llm") return; // explicit judgments are never overwritten
     const c = classifyWithRules({ from, subject, body });
     if (cur && cur === c.category) return;
     setTriage(id, c.category, c.reason, c.confidence, c.source, c.evidence);
@@ -139,7 +139,7 @@ export function reorganizePass(): { reorganized: number } {
  * One agent pass: triage new inbound email, reorganize existing labels under
  * the current rules, then (re)compute nudges. Idempotent.
  */
-export function runAgent(nowMs = Date.now()): AgentReport {
+export function runAgent(nowMs = Date.now(), opts?: { llm?: boolean }): AgentReport {
   ensureSeeded();
   let triaged = 0;
   const triageNew = (id: string, from: string, subject: string, body: string, mirrorTo?: string) => {
@@ -208,5 +208,10 @@ export function runAgent(nowMs = Date.now()): AgentReport {
 
   const pruned = pruneNudges(valid);
   const nudges = listActiveNudges(nowMs).length;
+  if (opts?.llm) {
+    // Best-effort: ask the local LLM about ambiguous triage in the background.
+    // Rate-limited inside consultLLM; results land as source="llm" triage.
+    import("./llm").then((m) => m.consultLLM().catch(() => {})).catch(() => {});
+  }
   return { triaged, reorganized, nudges, pruned };
 }

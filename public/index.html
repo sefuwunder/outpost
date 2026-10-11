@@ -164,6 +164,18 @@
     <label><span class="lab">Provision token</span><input id="s-e2ee_token" type="password" autocomplete="off"></label>
     <div class="testrow"><span>Registration</span><span class="testout" id="tout-e2ee"></span><button data-test="e2ee" type="button">Test</button></div>
   </fieldset>
+  <div class="secttl">🧠 Local LLM · <span class="cfgdot" id="cfg-llm">off</span></div>
+  <fieldset class="card">
+    <label class="check"><input type="checkbox" id="s-llm_enabled"> <span class="lab">Let the local LLM advise triage</span></label>
+    <label><span class="lab">LLM server</span><input id="s-llm_url" placeholder="http://localhost:11434"></label>
+    <label><span class="lab">Model</span><input id="s-llm_model" maxlength="80" placeholder="llama3.1"></label>
+    <label><span class="lab">Ask when local confidence below</span><input id="s-llm_threshold" maxlength="4" placeholder="0.65"></label>
+    <div class="testrow"><span>Reachability</span><span class="testout" id="tout-llm"></span><button id="btn-test-llm" type="button">Test</button></div>
+    <p style="font-size:13px;color:var(--muted);margin:6px 0 0">When enabled, the agent asks your local model about
+    ambiguous mail (max 5 per poll, ≥10 min apart). Its judgments are labeled
+    <b>LLM</b>, train the local model, and only your explicit corrections outrank them.
+    API: <code>/api/llm/pending</code> · <code>/api/llm/context</code> · <code>/api/llm/judgment</code>.</p>
+  </fieldset>
   <div class="secttl">Triage rules <span style="text-transform:none;letter-spacing:0">— what the agent learned from your corrections</span></div>
   <fieldset class="card" id="rules-card"><div id="rules-list" style="padding:11px 0;font-size:15px;color:var(--muted)">No rules yet — correct a label to teach the agent.</div></fieldset>
   <div class="formbtns"><button class="primary" id="btn-save-settings" type="button">Save</button></div>

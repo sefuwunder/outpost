@@ -256,7 +256,7 @@ $("sheet-wrap").addEventListener("click", (e) => { if (e.target === $("sheet-wra
 
 async function openTriageSheet(messageId, current) {
   const t = await api("/api/triage/explain?messageId=" + encodeURIComponent(messageId));
-  const srcName = t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : t.source === "userrule" ? "your rule" : "rules";
+  const srcName = t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : t.source === "userrule" ? "your rule" : t.source === "llm" ? "local LLM" : "rules";
   $("sheet-title").textContent = `Labeled "${t.category}" · ${srcName}`;
   const why = t.source === "model" && t.evidence.length
     ? `<div style="padding:8px 16px 4px;font-size:13px;color:var(--muted)">Because: ${t.evidence.slice(0, 3).map((e) => `${esc(e.feature)} (${e.weight >= 0 ? "+" : ""}${e.weight.toFixed(1)})`).join(", ")}</div>`
@@ -557,11 +557,12 @@ $("btn-archive").addEventListener("click", async () => {
 // ---------- settings ----------
 $("btn-settings").addEventListener("click", async () => {
   const s = await api("/api/settings");
-  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "e2ee_url", "e2ee_handle"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_threshold"])
     $("s-" + k).value = s.values[k] || "";
+  $("s-llm_enabled").checked = s.values["llm_enabled"] === "1";
   $("s-smtp_secure").value = s.values["smtp_secure"] || "";
   $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = ""; $("s-e2ee_token").value = "";
-  for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured], ["e2ee", s.e2ee_configured]]) {
+  for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured], ["e2ee", s.e2ee_configured], ["llm", s.llm_configured]]) {
     const el = $("cfg-" + k);
     el.textContent = v ? "on" : "off";
     el.className = "cfgdot" + (v ? " yes" : "");
@@ -590,8 +591,9 @@ async function renderRulesList() {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold"])
     payload[k] = $("s-" + k).value;
+  payload["llm_enabled"] = $("s-llm_enabled").checked ? "1" : "0";
   for (const k of ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"]) if (!payload[k]) delete payload[k];
   await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
   $("btn-settings").click();
@@ -605,6 +607,15 @@ document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("clic
     out.className = "testout " + (r.ok ? "ok" : "err");
   } catch (e) { out.textContent = "✗ " + e.message; out.className = "testout err"; }
 }));
+$("btn-test-llm").addEventListener("click", async () => {
+  const out = $("tout-llm");
+  out.textContent = "…"; out.className = "testout";
+  try {
+    const r = await api("/api/llm/status");
+    out.textContent = r.reachable ? `✓ ${r.models?.length ? r.models.slice(0, 3).join(", ") : "reachable"}` : "✗ " + (r.error || "");
+    out.className = "testout " + (r.reachable ? "ok" : "err");
+  } catch (e) { out.textContent = "✗ " + e.message; out.className = "testout err"; }
+});
 
 async function refresh() {
   if (state.view === "contacts") { $("btn-contacts").click(); return; }

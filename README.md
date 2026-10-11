@@ -122,6 +122,25 @@ keys and ciphertext — it can never read messages.
    into the unified thread. **Verify** in the contact editor shows the safety
    number — read it to each other once to rule out a meddler in the middle.
 
+## 🧠 Local LLM bridge
+
+A local LLM (Ollama) can advise the decision model. The deterministic pipeline
+stays in charge — the LLM is an advisor whose judgments land as triage with
+source `llm`: locked like your corrections, training the local Jev model, and
+outranked only by your explicit corrections.
+
+- Settings → 🧠 Local LLM: server URL, model, confidence threshold, Test.
+- When enabled, each poll asks the model about ambiguous mail (rules-fallback
+  or low-confidence; max 5 per poll, ≥10 min apart).
+- Endpoints for your own harness or the model itself:
+  - `GET /api/llm/pending` — messages where input would help, with current triage
+  - `GET /api/llm/context?message_id=` — the full decision briefing: message,
+    current triage + evidence, sender history, matched user rules
+  - `GET /api/llm/nudges` — nudge decision context (per-kind dismiss rates, active nudges)
+  - `POST /api/llm/judgment` — `{message_id(s), category, confidence, reason}` → applies + trains
+  - `POST /api/llm/consult` — run one consult pass now (synchronous report)
+  - `GET /api/llm/status` — reachability probe + pending count
+
 ## Tests
 
 ```bash

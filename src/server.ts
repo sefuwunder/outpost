@@ -17,6 +17,7 @@ const SETTING_KEYS = new Set([
   "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "smtp_secure",
   "matrix_homeserver", "matrix_token", "matrix_user_id",
   "e2ee_url", "e2ee_token", "e2ee_handle",
+  "llm_url", "llm_model", "llm_enabled", "llm_threshold",
 ]);
 const NON_SECRET = ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "matrix_user_id"];
 
@@ -33,7 +34,7 @@ async function sweep() {
   try {
     const report = await pollInbox(realTransports());
     const { runAgent } = await import("./agent");
-    const agent = runAgent();
+    const agent = runAgent(Date.now(), { llm: true });
     // First-run bootstrap: the inbox promises 30 days, but the poller only
     // sees UNSEEN mail — backfill recent mail once while the inbox is empty.
     let backfilled: unknown = null;
@@ -295,6 +296,46 @@ Bun.serve({
         const { deleteTriageRule, listTriageRules } = await import("./db");
         deleteTriageRule(m[1]);
         return json({ ok: true, rules: listTriageRules() });
+      }
+      // ---------- local LLM bridge: context out, judgments in ----------
+      if (p === "/api/llm/pending" && req.method === "GET") {
+        const { pendingForLLM } = await import("./llm");
+        return json({ pending: pendingForLLM(20) });
+      }
+      if (p === "/api/llm/context" && req.method === "GET") {
+        const { messageContext } = await import("./llm");
+        const ctx = messageContext(String(url.searchParams.get("message_id") || ""));
+        if (!ctx) return bad("not found", 404);
+        return json(ctx);
+      }
+      if (p === "/api/llm/nudges" && req.method === "GET") {
+        const { nudgeContext } = await import("./llm");
+        return json(nudgeContext());
+      }
+      if (p === "/api/llm/judgment" && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as any;
+        const ids = Array.isArray(b.message_ids) ? b.message_ids : b.message_id ? [b.message_id] : [];
+        if (!ids.length) return bad("message_id required");
+        const { applyJudgment } = await import("./llm");
+        const applied: string[] = [];
+        try {
+          for (const id of ids.slice(0, 50)) {
+            applyJudgment({ message_id: String(id), category: b.category, confidence: b.confidence, reason: b.reason });
+            applied.push(String(id));
+          }
+        } catch (e: any) {
+          return json({ ok: false, error: String(e?.message || e).slice(0, 200), applied });
+        }
+        return json({ ok: true, applied });
+      }
+      if (p === "/api/llm/consult" && req.method === "POST") {
+        const { consultLLM } = await import("./llm");
+        return json({ ok: true, ...(await consultLLM(true)) });
+      }
+      if (p === "/api/llm/status" && req.method === "GET") {
+        const { llmSettings, llmStatus, pendingForLLM } = await import("./llm");
+        const s = llmSettings();
+        return json({ ...(await llmStatus()), enabled: s.enabled, url: s.url, model: s.model, pending: pendingForLLM(5).length });
       }
       if (p === "/api/inbox/reorganize" && req.method === "POST") {
         const { reorganizePass } = await import("./agent");
