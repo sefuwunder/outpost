@@ -19,7 +19,7 @@ const VISIBLE = [
   "smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_secure",
   "matrix_homeserver", "matrix_user_id",
   "e2ee_url", "e2ee_handle",
-  "llm_url", "llm_model", "llm_enabled", "llm_threshold",
+  "llm_url", "llm_model", "llm_enabled", "llm_threshold", "llm_timeout",
 ];
 const SECRET = ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"];
 

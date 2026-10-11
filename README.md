@@ -129,7 +129,8 @@ stays in charge — the LLM is an advisor whose judgments land as triage with
 source `llm`: locked like your corrections, training the local Jev model, and
 outranked only by your explicit corrections.
 
-- Settings → 🧠 Local LLM: server URL, model, confidence threshold, Test.
+- Settings → 🧠 Local LLM: server URL, model, confidence threshold, answer
+  timeout (sec, default 600 — raise for slow hardware), Test.
 - When enabled, each poll asks the model about ambiguous mail (rules-fallback
   or low-confidence; max 5 per poll, ≥10 min apart).
 - Endpoints for your own harness or the model itself:

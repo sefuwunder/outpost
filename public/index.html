@@ -170,6 +170,7 @@
     <label><span class="lab">LLM server</span><input id="s-llm_url" placeholder="http://localhost:11434"></label>
     <label><span class="lab">Model</span><input id="s-llm_model" maxlength="80" placeholder="llama3.1"></label>
     <label><span class="lab">Ask when local confidence below</span><input id="s-llm_threshold" maxlength="4" placeholder="0.65"></label>
+    <label><span class="lab">Model answer timeout (sec)</span><input id="s-llm_timeout" maxlength="4" placeholder="600"></label>
     <div class="testrow"><span>Reachability</span><span class="testout" id="tout-llm"></span><button id="btn-test-llm" type="button">Test</button></div>
     <p style="font-size:13px;color:var(--muted);margin:6px 0 0">When enabled, the agent asks your local model about
     ambiguous mail (max 5 per poll, ≥10 min apart). Its judgments are labeled

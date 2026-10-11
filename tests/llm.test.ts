@@ -178,6 +178,18 @@ test("llmSettings trims stray whitespace; llmStatus flags missing/embedding-only
   expect(st.supports_generate).toBeUndefined();
 });
 
+test("llmSettings timeout defaults to 600s and clamps", () => {
+  db.setSetting("llm_timeout", "");
+  expect(llm.llmSettings().timeout).toBe(600);
+  db.setSetting("llm_timeout", "120");
+  expect(llm.llmSettings().timeout).toBe(120);
+  db.setSetting("llm_timeout", "5"); // below floor
+  expect(llm.llmSettings().timeout).toBe(15);
+  db.setSetting("llm_timeout", "99999"); // above ceiling
+  expect(llm.llmSettings().timeout).toBe(3600);
+  db.setSetting("llm_timeout", "");
+});
+
 afterAll(() => { ollama?.stop(); });
 
 // ---------- idle learning ----------

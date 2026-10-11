@@ -14,14 +14,17 @@ export interface LlmSettings {
   model: string;    // e.g. llama3.1
   enabled: boolean;
   threshold: number; // consult when the local model's confidence is below this
+  timeout: number;   // seconds to wait for one model answer
 }
 
 export function llmSettings(): LlmSettings {
+  const timeout = Math.min(3600, Math.max(15, Number(getSetting("llm_timeout") || 600) || 600));
   return {
     url: (getSetting("llm_url") || "http://localhost:11434").trim().replace(/\/$/, ""),
     model: (getSetting("llm_model") || "llama3.1").trim(),
     enabled: getSetting("llm_enabled") === "1",
     threshold: Number(getSetting("llm_threshold") || 0.65) || 0.65,
+    timeout,
   };
 }
 
@@ -184,7 +187,7 @@ export async function consultLLM(force = false): Promise<ConsultReport> {
     if (!ctx) continue;
     try {
       const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 90_000);
+      const timer = setTimeout(() => ctl.abort(), llmSettings().timeout * 1000);
       const r = await fetch(`${s.url}/api/generate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -259,7 +262,7 @@ const RULE_MIN_AGREE = 0.9;
 async function askLLM(prompt: string): Promise<string> {
   const s = llmSettings();
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 90_000);
+  const timer = setTimeout(() => ctl.abort(), llmSettings().timeout * 1000);
   try {
     const r = await fetch(`${s.url}/api/generate`, {
       method: "POST",

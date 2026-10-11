@@ -568,7 +568,7 @@ $("btn-archive").addEventListener("click", async () => {
 // ---------- settings ----------
 $("btn-settings").addEventListener("click", async () => {
   const s = await api("/api/settings");
-  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_threshold"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "smtp_host", "smtp_port", "smtp_user", "smtp_from", "matrix_homeserver", "e2ee_url", "e2ee_handle", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
     $("s-" + k).value = s.values[k] || "";
   $("s-llm_enabled").checked = s.values["llm_enabled"] === "1";
   $("s-smtp_secure").value = s.values["smtp_secure"] || "";
@@ -602,7 +602,7 @@ async function renderRulesList() {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
     payload[k] = $("s-" + k).value;
   payload["llm_enabled"] = $("s-llm_enabled").checked ? "1" : "0";
   for (const k of ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"]) if (!payload[k]) delete payload[k];
