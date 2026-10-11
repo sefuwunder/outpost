@@ -112,6 +112,18 @@ test("consultLLM applies the fake model's judgments", async () => {
       const url = new URL(req.url);
       if (url.pathname === "/api/tags") return Response.json({ models: [{ name: "fake-llm" }] });
       if (url.pathname === "/api/generate") {
+        const b = await req.json().catch(() => ({})) as any;
+        const prompt = String(b.prompt || "");
+        if (prompt.startsWith("RULE-PATTERN")) {
+          return Response.json({ response: '{"confirm": true, "reason": "consistent newsletter sender"}' });
+        }
+        if (prompt.startsWith("REVIEW")) {
+          // disagree when the subject carries the WRONG marker
+          if (prompt.includes("WRONG")) {
+            return Response.json({ response: '{"agree": false, "category": "personal", "confidence": 0.92, "reason": "a human wrote directly"}' });
+          }
+          return Response.json({ response: '{"agree": true, "category": "automated", "confidence": 0.9, "reason": "label looks right"}' });
+        }
         return Response.json({ response: '{"category":"personal","confidence":0.92,"reason":"direct human request"}' });
       }
       return new Response("nf", { status: 404 });
@@ -148,3 +160,82 @@ test("consultLLM stays silent when disabled; llmStatus probes reachability", asy
 });
 
 afterAll(() => { ollama?.stop(); });
+
+// ---------- idle learning ----------
+
+function llmOn() {
+  db.setSetting("llm_enabled", "1");
+  db.setSetting("llm_url", `http://127.0.0.1:${OLLAMA_PORT}`);
+  db.setSetting("llm_model", "fake-llm");
+}
+
+test("parseReview / parseRuleConfirm are defensive", () => {
+  expect(llm.parseReview('{"agree": true, "category": "personal", "confidence": 0.8, "reason": "ok"}')?.agree).toBe(true);
+  expect(llm.parseReview('{"agree": "yes", "category": "personal"}')).toBeNull();
+  expect(llm.parseReview('{"agree": false, "category": "spam"}')).toBeNull();
+  expect(llm.parseReview('nothing')).toBeNull();
+  expect(llm.parseRuleConfirm('{"confirm": true, "reason": "ok"}')?.confirm).toBe(true);
+  expect(llm.parseRuleConfirm('{"confirm": "maybe"}')).toBeNull();
+});
+
+test("idleLearn reviews weak past decisions: refines disagreements, reinforces agreements", async () => {
+  llmOn();
+  const wrong = seedInbox("bill@x.com", "WRONG invoice attached", "rules", "automated");
+  const fine = seedInbox("alerts@x.com", "server alert", "rules", "automated");
+  const locked = seedInbox("boss@x.com", "user corrected", "user", "personal");
+  const rep = await llm.idleLearn(true);
+  expect(rep.reviewed).toBe(2); // user-locked never reviewed
+  expect(rep.refined).toBe(1);
+  expect(rep.reinforced).toBe(1);
+  const t = db.getDb().query("SELECT category, source, reason FROM triage WHERE message_id = ?").get(wrong) as any;
+  expect(t.category).toBe("personal");
+  expect(t.source).toBe("llm");
+  expect(t.reason).toContain("refined on review");
+  const t2 = db.getDb().query("SELECT category, source FROM triage WHERE message_id = ?").get(fine) as any;
+  expect(t2.category).toBe("automated"); // agreement changes nothing stored
+  expect(t2.source).toBe("rules");
+  const t3 = db.getDb().query("SELECT category FROM triage WHERE message_id = ?").get(locked) as any;
+  expect(t3.category).toBe("personal");
+  // rate-limited without force
+  const rep2 = await llm.idleLearn(false);
+  expect(rep2.skipped).toBe("rate-limited");
+});
+
+test("idleLearn mines consistent sender patterns into llm rules", async () => {
+  llmOn();
+  for (let i = 0; i < 9; i++) {
+    seedInbox("news@digest.com", `Digest #${i}`, "rules", "newsletter");
+  }
+  // one dissenting message keeps it under 100% but at 90%
+  const d = seedInbox("news@digest.com", "a personal note", "rules", "personal");
+  void d;
+  const rep = await llm.idleLearn(true);
+  expect(rep.rules_proposed).toBe(1);
+  expect(rep.rules_applied).toBe(1);
+  const rules = db.listTriageRules();
+  const r = rules.find((x) => x.pattern === "news@digest.com");
+  expect(r?.category).toBe("newsletter");
+  expect(r?.source).toBe("llm");
+  // second pass: rule exists → not proposed again
+  const rep2 = await llm.idleLearn(true);
+  expect(rep2.rules_proposed).toBe(0);
+});
+
+test("idleLearn skips senders the user has corrected", async () => {
+  llmOn();
+  for (let i = 0; i < 8; i++) seedInbox("mixed@x.com", `M #${i}`, "rules", "newsletter");
+  const c = seedInbox("mixed@x.com", "actually personal", "rules", "newsletter");
+  db.setTriage(c, "personal", "corrected by you", 1, "user", "");
+  const rep = await llm.idleLearn(true);
+  expect(rep.rules_applied).toBe(0);
+  expect(db.listTriageRules().find((x) => x.pattern === "mixed@x.com")).toBeUndefined();
+});
+
+test("maybeIdleLearn waits for true idleness", async () => {
+  db.setSetting("llm_enabled", "0");
+  expect(await llm.maybeIdleLearn()).toBeNull();
+  llmOn();
+  db.setSetting("llm_last_idle", "0");
+  seedInbox("u@x.com", "untriaged", null); // pending consult work exists
+  expect(await llm.maybeIdleLearn()).toBeNull(); // urgent first
+});

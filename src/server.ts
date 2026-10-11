@@ -332,6 +332,10 @@ Bun.serve({
         const { consultLLM } = await import("./llm");
         return json({ ok: true, ...(await consultLLM(true)) });
       }
+      if (p === "/api/llm/idle-learn" && req.method === "POST") {
+        const { idleLearn } = await import("./llm");
+        return json({ ok: true, ...(await idleLearn(true)) });
+      }
       if (p === "/api/llm/status" && req.method === "GET") {
         const { llmSettings, llmStatus, pendingForLLM } = await import("./llm");
         const s = llmSettings();

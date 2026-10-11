@@ -211,7 +211,11 @@ export function runAgent(nowMs = Date.now(), opts?: { llm?: boolean }): AgentRep
   if (opts?.llm) {
     // Best-effort: ask the local LLM about ambiguous triage in the background.
     // Rate-limited inside consultLLM; results land as source="llm" triage.
-    import("./llm").then((m) => m.consultLLM().catch(() => {})).catch(() => {});
+    // When the queue is clear, the idle pass reviews past decisions instead.
+    import("./llm").then((m) => {
+      m.consultLLM().catch(() => {});
+      m.maybeIdleLearn().catch(() => {});
+    }).catch(() => {});
   }
   return { triaged, reorganized, nudges, pruned };
 }

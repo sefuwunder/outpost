@@ -102,6 +102,7 @@ export function openDb(path?: string): Database {
     CREATE TABLE IF NOT EXISTS triage_rules (
       id TEXT PRIMARY KEY, scope TEXT NOT NULL, pattern TEXT NOT NULL,
       category TEXT NOT NULL, created_at TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'user',
       UNIQUE(scope, pattern)
     );
     -- E2EE client state: private keys + sessions. Never exposed via the API.
@@ -113,6 +114,11 @@ export function openDb(path?: string): Database {
   const contactCols = db.query("PRAGMA table_info(contacts)").all() as { name: string }[];
   if (!contactCols.some((c) => c.name === "e2ee_handle")) {
     db.exec("ALTER TABLE contacts ADD COLUMN e2ee_handle TEXT NOT NULL DEFAULT ''");
+  }
+  // Migration: triage_rules.source (older DBs lack the column).
+  const ruleCols = db.query("PRAGMA table_info(triage_rules)").all() as { name: string }[];
+  if (!ruleCols.some((c) => c.name === "source")) {
+    db.exec("ALTER TABLE triage_rules ADD COLUMN source TEXT NOT NULL DEFAULT 'user'");
   }
   // Migration: triage confidence/source/evidence (older DBs lack the columns).
   const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
@@ -451,18 +457,18 @@ export function getTriageFull(messageId: string): { category: string; reason: st
 
 export interface TriageRule {
   id: string; scope: "sender" | "domain"; pattern: string;
-  category: TriageCategory; created_at: string;
+  category: TriageCategory; created_at: string; source: string;
 }
 
 /** Create or replace a rule. Patterns are lowercased; domains must be bare (no @). */
-export function upsertTriageRule(scope: "sender" | "domain", pattern: string, category: TriageCategory): TriageRule {
+export function upsertTriageRule(scope: "sender" | "domain", pattern: string, category: TriageCategory, source = "user"): TriageRule {
   const p = (pattern || "").toLowerCase().trim().replace(/^@/, "");
   if (!p) throw new Error("rule pattern is required");
   const id = `trl_${scope}_${p.replace(/[^a-z0-9.]/g, "_")}`;
   getDb().query(
-    "INSERT INTO triage_rules(id, scope, pattern, category, created_at) VALUES(?,?,?,?,?) ON CONFLICT(scope, pattern) DO UPDATE SET category = excluded.category"
-  ).run(id, scope, p, category, nowIso());
-  return { id, scope, pattern: p, category, created_at: nowIso() };
+    "INSERT INTO triage_rules(id, scope, pattern, category, created_at, source) VALUES(?,?,?,?,?,?) ON CONFLICT(scope, pattern) DO UPDATE SET category = excluded.category, source = excluded.source"
+  ).run(id, scope, p, category, nowIso(), source);
+  return { id, scope, pattern: p, category, created_at: nowIso(), source };
 }
 
 /** Sender-exact match first, then domain. Null when no rule applies. */

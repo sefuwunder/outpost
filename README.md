@@ -140,6 +140,12 @@ outranked only by your explicit corrections.
   - `POST /api/llm/judgment` — `{message_id(s), category, confidence, reason}` → applies + trains
   - `POST /api/llm/consult` — run one consult pass now (synchronous report)
   - `GET /api/llm/status` — reachability probe + pending count
+- **Idle learning** — when the queue is clear and 6h have passed, the agent
+  does a background pass over stored mail: the LLM *reviews* weak past
+  decisions (agreements reinforce the local model; confident disagreements
+  refine the label), and *mines* consistent sender patterns into triage rules
+  (LLM-confirmed, marked 🤖, deletable like any rule, never touching
+  senders you've corrected). `POST /api/llm/idle-learn` runs it on demand.
 
 ## Tests
 

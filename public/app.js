@@ -580,7 +580,7 @@ async function renderRulesList() {
       return;
     }
     box.innerHTML = rules.map((r) =>
-      `<div class="testrow"><span>All mail from <b>${esc(r.scope === "domain" ? "@" + r.pattern : r.pattern)}</b> → ${esc(r.category)}</span><button data-rule="${esc(r.id)}" type="button">Delete</button></div>`).join("");
+      `<div class="testrow"><span>${r.source === "llm" ? "🤖 " : ""}All mail from <b>${esc(r.scope === "domain" ? "@" + r.pattern : r.pattern)}</b> → ${esc(r.category)}${r.source === "llm" ? ' <i style="color:var(--muted)">(learned)</i>' : ""}</span><button data-rule="${esc(r.id)}" type="button">Delete</button></div>`).join("");
     box.querySelectorAll("[data-rule]").forEach((b) => b.addEventListener("click", async () => {
       await api("/api/triage/rules/" + encodeURIComponent(b.dataset.rule), { method: "DELETE" });
       renderRulesList();

@@ -222,3 +222,204 @@ export async function llmStatus(): Promise<{ reachable: boolean; models?: string
     return { reachable: false, error: String(e?.message || e).slice(0, 120) };
   }
 }
+
+// ---------- idle learning: review the past, mine patterns ----------
+
+const IDLE_CAP_REVIEW = 8;
+const IDLE_CAP_RULES = 3;
+const IDLE_MIN_GAP_MS = 6 * 60 * 60 * 1000;
+const RULE_MIN_MSGS = 8;
+const RULE_MIN_AGREE = 0.9;
+
+async function askLLM(prompt: string): Promise<string> {
+  const s = llmSettings();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 90_000);
+  try {
+    const r = await fetch(`${s.url}/api/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: ctl.signal,
+      body: JSON.stringify({ model: s.model, prompt, stream: false, format: "json" }),
+    });
+    if (!r.ok) throw new Error(`LLM ${r.status}`);
+    const j = (await r.json()) as { response?: string };
+    return j.response || "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function reviewPrompt(ctx: Record<string, unknown>): string {
+  return `REVIEW a past triage decision. You see the message and what the local pipeline decided (with its evidence). Reply with ONLY a JSON object — no other text.
+
+{"agree": true|false, "category": "personal|newsletter|receipt|automated", "confidence": 0.0-1.0, "reason": "one short sentence"}
+
+Set agree=false only if you are confident the stored label is wrong; then give the right category. Categories: personal = a human wrote to the user directly; newsletter = bulk editorial; receipt = transactional; automated = machine notification.
+
+Context:
+${JSON.stringify(ctx, null, 1)}`;
+}
+
+export function parseReview(text: string): { agree: boolean; category: string; confidence: number; reason: string } | null {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]);
+    if (typeof o.agree !== "boolean" || !CATS.includes(o.category)) return null;
+    return {
+      agree: o.agree,
+      category: o.category,
+      confidence: Math.min(1, Math.max(0, Number(o.confidence ?? 0.5) || 0.5)),
+      reason: String(o.reason || "").slice(0, 300),
+    };
+  } catch { return null; }
+}
+
+/** Past decisions worth a second look: weak originals (rules fallback or low-confidence model), never user/LLM-locked. */
+function reviewCandidates(limit: number): Array<InboxRow & { cur: string; src: string; conf: number }> {
+  const { threshold } = llmSettings();
+  const d = getDb();
+  return d.query(`
+    SELECT i.*, t.category AS cur, t.source AS src, t.confidence AS conf
+    FROM inbox i JOIN triage t ON t.message_id = i.id
+    WHERE t.source = 'rules' OR (t.source = 'model' AND t.confidence < ?)
+    ORDER BY t.confidence ASC, i.at DESC LIMIT ?
+  `).all(threshold, limit) as Array<InboxRow & { cur: string; src: string; conf: number }>;
+}
+
+/** Senders with a strong, consistent pattern the pipeline hasn't rule-ified yet. */
+function ruleCandidates(): Array<{ sender: string; category: string; n: number; agree: number; samples: string[] }> {
+  const d = getDb();
+  const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const rows = d.query(`
+    SELECT lower(i.from_email) AS sender, t.category AS cat, COUNT(*) AS n,
+      GROUP_CONCAT(i.subject, ' ‖ ') AS subjects
+    FROM inbox i JOIN triage t ON t.message_id = i.id
+    WHERE substr(i.at, 1, 10) > ? AND t.source != 'user'
+    GROUP BY sender, cat
+  `).all(since) as Array<{ sender: string; cat: string; n: number; subjects: string }>;
+  const bySender = new Map<string, Array<{ cat: string; n: number; subjects: string }>>();
+  for (const r of rows) {
+    if (!r.sender || !r.sender.includes("@")) continue;
+    const l = bySender.get(r.sender) || [];
+    l.push({ cat: r.cat, n: r.n, subjects: r.subjects });
+    bySender.set(r.sender, l);
+  }
+  const existing = new Set(
+    (d.query("SELECT scope, pattern FROM triage_rules").all() as Array<{ scope: string; pattern: string }>)
+      .map((r) => `${r.scope}:${r.pattern}`)
+  );
+  const out: Array<{ sender: string; category: string; n: number; agree: number; samples: string[] }> = [];
+  for (const [sender, cats] of bySender) {
+    const total = cats.reduce((a, c) => a + c.n, 0);
+    const top = cats.sort((a, b) => b.n - a.n)[0];
+    if (total < RULE_MIN_MSGS || top.n / total < RULE_MIN_AGREE) continue;
+    if (existing.has(`sender:${sender}`)) continue;
+    // skip senders the user has ever corrected — they have opinions there
+    const corrected = (d.query(`
+      SELECT COUNT(*) AS n FROM inbox i JOIN triage t ON t.message_id = i.id
+      WHERE lower(i.from_email) = ? AND t.source = 'user'
+    `).get(sender) as { n: number }).n;
+    if (corrected > 0) continue;
+    out.push({
+      sender, category: top.cat, n: total, agree: top.n / total,
+      samples: (top.subjects || "").split(" ‖ ").slice(0, 3),
+    });
+  }
+  return out.sort((a, b) => b.n - a.n);
+}
+
+function rulePrompt(c: { sender: string; category: string; n: number; agree: number; samples: string[] }): string {
+  return `RULE-PATTERN check. A sender's mail has been consistently labeled "${c.category}" (${c.n} messages, ${(c.agree * 100).toFixed(0)}% agreement, last 30 days). Sample subjects: ${JSON.stringify(c.samples)}. Sender: ${c.sender}.
+
+Should ALL future mail from this sender be auto-labeled "${c.category}"? Reply with ONLY a JSON object — no other text.
+{"confirm": true|false, "reason": "one short sentence"}
+Confirm only if the pattern looks semantically consistent (e.g. a newsletter sender), not a coincidence.`;
+}
+
+export function parseRuleConfirm(text: string): { confirm: boolean; reason: string } | null {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const o = JSON.parse(m[0]);
+    if (typeof o.confirm !== "boolean") return null;
+    return { confirm: o.confirm, reason: String(o.reason || "").slice(0, 300) };
+  } catch { return null; }
+}
+
+export interface IdleReport {
+  reviewed: number; reinforced: number; refined: number; contested: number;
+  rules_proposed: number; rules_applied: number;
+  errors: string[]; skipped: string;
+}
+
+/**
+ * Idle learning pass: (1) ask the LLM to review weak past decisions —
+ * agreements reinforce the local model, confident disagreements refine the
+ * label; (2) mine consistent sender patterns into triage rules (LLM-confirmed).
+ * Bounded and rate-limited; safe to run from the poll sweep.
+ */
+export async function idleLearn(force = false): Promise<IdleReport> {
+  const s = llmSettings();
+  const errors: string[] = [];
+  const rep: IdleReport = { reviewed: 0, reinforced: 0, refined: 0, contested: 0, rules_proposed: 0, rules_applied: 0, errors, skipped: "" };
+  if (!s.enabled) { rep.skipped = "llm disabled"; return rep; }
+  const last = Number(getSetting("llm_last_idle") || 0);
+  if (!force && Date.now() - last < IDLE_MIN_GAP_MS) { rep.skipped = "rate-limited"; return rep; }
+
+  const { upsertTriageRule } = await import("./db");
+
+  // 1. review weak past decisions
+  for (const c of reviewCandidates(IDLE_CAP_REVIEW)) {
+    const ctx = messageContext(c.id);
+    if (!ctx) continue;
+    try {
+      const parsed = parseReview(await askLLM(reviewPrompt(ctx)));
+      if (!parsed) throw new Error("unparseable review");
+      rep.reviewed++;
+      const sender = (c.from_email || "").toLowerCase().trim();
+      const input = { from: sender, subject: c.subject || "", body: c.body || "" };
+      if (parsed.agree) {
+        learn(c.cur as TriageCategory, input); // reinforce the local model
+        rep.reinforced++;
+      } else if (parsed.confidence >= 0.8 && (c.src === "rules" || c.conf < s.threshold)) {
+        applyJudgment({ message_id: c.id, category: parsed.category as TriageCategory, confidence: parsed.confidence, reason: "refined on review: " + parsed.reason });
+        rep.refined++;
+      } else {
+        rep.contested++; // LLM disagrees but the original was strong — leave it
+      }
+    } catch (e: any) {
+      errors.push(`review ${c.id}: ${String(e?.message || e).slice(0, 120)}`);
+      break;
+    }
+  }
+
+  // 2. mine sender patterns into rules
+  for (const cand of ruleCandidates().slice(0, IDLE_CAP_RULES)) {
+    rep.rules_proposed++;
+    try {
+      const parsed = parseRuleConfirm(await askLLM(rulePrompt(cand)));
+      if (!parsed) throw new Error("unparseable confirmation");
+      if (parsed.confirm) {
+        upsertTriageRule("sender", cand.sender, cand.category as TriageCategory, "llm");
+        rep.rules_applied++;
+      }
+    } catch (e: any) {
+      errors.push(`rule ${cand.sender}: ${String(e?.message || e).slice(0, 120)}`);
+      break;
+    }
+  }
+
+  setSetting("llm_last_idle", String(Date.now()));
+  return rep;
+}
+
+/** Run the idle pass only when truly idle: enabled, due, and nothing ambiguous waiting. */
+export async function maybeIdleLearn(): Promise<IdleReport | null> {
+  if (!llmSettings().enabled) return null;
+  const last = Number(getSetting("llm_last_idle") || 0);
+  if (Date.now() - last < IDLE_MIN_GAP_MS) return null;
+  if (pendingForLLM(1).length > 0) return null; // urgent consults first
+  return idleLearn();
+}
