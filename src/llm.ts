@@ -18,8 +18,8 @@ export interface LlmSettings {
 
 export function llmSettings(): LlmSettings {
   return {
-    url: (getSetting("llm_url") || "http://localhost:11434").replace(/\/$/, ""),
-    model: getSetting("llm_model") || "llama3.1",
+    url: (getSetting("llm_url") || "http://localhost:11434").trim().replace(/\/$/, ""),
+    model: (getSetting("llm_model") || "llama3.1").trim(),
     enabled: getSetting("llm_enabled") === "1",
     threshold: Number(getSetting("llm_threshold") || 0.65) || 0.65,
   };
@@ -211,7 +211,10 @@ export async function consultLLM(force = false): Promise<ConsultReport> {
 }
 
 /** Reachability probe for the Settings test button (no generation cost). */
-export async function llmStatus(): Promise<{ reachable: boolean; models?: string[]; error?: string }> {
+export async function llmStatus(): Promise<{
+  reachable: boolean; models?: string[]; error?: string;
+  model_found?: boolean; supports_generate?: boolean; capabilities?: string[];
+}> {
   const s = llmSettings();
   try {
     const ctl = new AbortController();
@@ -220,7 +223,26 @@ export async function llmStatus(): Promise<{ reachable: boolean; models?: string
     clearTimeout(timer);
     if (!r.ok) return { reachable: false, error: `HTTP ${r.status}` };
     const j = (await r.json()) as { models?: Array<{ name: string }> };
-    return { reachable: true, models: (j.models || []).map((m) => m.name) };
+    const models = (j.models || []).map((m) => m.name);
+    const out: { reachable: boolean; models: string[]; model_found: boolean; supports_generate?: boolean; capabilities?: string[] } =
+      { reachable: true, models, model_found: models.some((m) => m === s.model || m.startsWith(s.model + ":")) };
+    // Check the configured model's capabilities so the Test button can warn
+    // about embedding-only models (they 400 on /api/generate).
+    if (out.model_found) {
+      try {
+        const sr = await fetch(`${s.url}/api/show`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: s.model }),
+        });
+        if (sr.ok) {
+          const sj = (await sr.json()) as { capabilities?: string[] };
+          out.capabilities = sj.capabilities || [];
+          out.supports_generate = out.capabilities.includes("completion");
+        }
+      } catch { /* capabilities are advisory */ }
+    }
+    return out;
   } catch (e: any) {
     return { reachable: false, error: String(e?.message || e).slice(0, 120) };
   }

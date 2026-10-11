@@ -111,6 +111,11 @@ test("consultLLM applies the fake model's judgments", async () => {
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/api/tags") return Response.json({ models: [{ name: "fake-llm" }] });
+      if (url.pathname === "/api/show") {
+        const b = await req.json().catch(() => ({})) as any;
+        const caps = String(b.name || "").includes("embed") ? ["embedding"] : ["completion"];
+        return Response.json({ capabilities: caps });
+      }
       if (url.pathname === "/api/generate") {
         const b = await req.json().catch(() => ({})) as any;
         const prompt = String(b.prompt || "");
@@ -154,9 +159,23 @@ test("consultLLM stays silent when disabled; llmStatus probes reachability", asy
   const st = await llm.llmStatus();
   expect(st.reachable).toBe(true);
   expect(st.models).toContain("fake-llm");
+  expect(st.model_found).toBe(true);
+  expect(st.supports_generate).toBe(true);
   db.setSetting("llm_url", "http://127.0.0.1:19999");
   const st2 = await llm.llmStatus();
   expect(st2.reachable).toBe(false);
+});
+
+test("llmSettings trims stray whitespace; llmStatus flags missing/embedding-only models", async () => {
+  db.setSetting("llm_url", `http://127.0.0.1:${OLLAMA_PORT} `);
+  db.setSetting("llm_model", "  fake-llm  ");
+  expect(llm.llmSettings().url).toBe(`http://127.0.0.1:${OLLAMA_PORT}`);
+  expect(llm.llmSettings().model).toBe("fake-llm");
+  db.setSetting("llm_model", "not-pulled");
+  const st = await llm.llmStatus();
+  expect(st.reachable).toBe(true);
+  expect(st.model_found).toBe(false);
+  expect(st.supports_generate).toBeUndefined();
 });
 
 afterAll(() => { ollama?.stop(); });

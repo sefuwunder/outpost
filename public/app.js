@@ -623,8 +623,18 @@ $("btn-test-llm").addEventListener("click", async () => {
   out.textContent = "…"; out.className = "testout";
   try {
     const r = await api("/api/llm/status");
-    out.textContent = r.reachable ? `✓ ${r.models?.length ? r.models.slice(0, 3).join(", ") : "reachable"}` : "✗ " + (r.error || "");
-    out.className = "testout " + (r.reachable ? "ok" : "err");
+    if (!r.reachable) { out.textContent = "✗ " + (r.error || ""); out.className = "testout err"; return; }
+    const model = $("s-llm_model").value.trim();
+    if (r.model_found === false) {
+      out.textContent = `✗ model "${model}" is not pulled — ollama pull ${model}`;
+      out.className = "testout err"; return;
+    }
+    if (r.supports_generate === false) {
+      out.textContent = `✗ "${model}" is embedding-only and can't judge mail — use a chat model`;
+      out.className = "testout err"; return;
+    }
+    out.textContent = `✓ ${r.models?.length ? r.models.slice(0, 3).join(", ") : "reachable"}`;
+    out.className = "testout ok";
   } catch (e) { out.textContent = "✗ " + e.message; out.className = "testout err"; }
 });
 
