@@ -298,7 +298,16 @@ $("sheet-cancel").addEventListener("click", closeSheet);
 $("sheet-wrap").addEventListener("click", (e) => { if (e.target === $("sheet-wrap")) closeSheet(); });
 
 async function openTriageSheet(messageId, current) {
-  const t = await api("/api/triage/explain?messageId=" + encodeURIComponent(messageId));
+  $("sheet-title").textContent = "Organize";
+  $("sheet-body").innerHTML = `<div style="padding:20px 16px;color:var(--muted)">Loading…</div>`;
+  $("sheet-wrap").hidden = false;
+  let t;
+  try {
+    t = await api("/api/triage/explain?messageId=" + encodeURIComponent(messageId));
+  } catch (e) {
+    $("sheet-body").innerHTML = `<div style="padding:20px 16px;color:var(--muted)">Couldn't load categories. Try again.</div>`;
+    return;
+  }
   const srcName = t.source === "model" ? "learned model" : t.source === "user" ? "you corrected this" : t.source === "userrule" ? "your rule" : t.source === "llm" ? "local LLM" : "rules";
   $("sheet-title").textContent = `Labeled "${t.category}" · ${srcName}`;
   const why = t.source === "model" && t.evidence.length
@@ -326,7 +335,6 @@ async function openTriageSheet(messageId, current) {
         : r.rule ? `Rule saved: all mail from ${r.rule} → ${cat}.` : "Label updated.");
     }));
   }));
-  $("sheet-wrap").hidden = false;
 }
 
 // ---------- inbox: 30 days of email, organized by the agent ----------

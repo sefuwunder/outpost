@@ -303,8 +303,10 @@ Bun.serve({
         return json({ nudges });
       }
       if (p === "/api/inbox" && req.method === "GET") {
-        const { runAgent, rankInbox } = await import("./agent");
-        runAgent(); // ensure fresh triage before grouping
+        // NB: no runAgent() here — the 60s sweep already triages. Running the
+        // full agent (reorganize + nudges) on every inbox read made the UI
+        // crawl, since refresh() hits this endpoint every 30s.
+        const { rankInbox } = await import("./agent");
         const rows = listInbox();
         const sections: Record<string, typeof rows> = { personal: [], newsletter: [], receipt: [], automated: [] };
         for (const r of rows) (sections[r.category] || sections.personal).push(r);
@@ -335,8 +337,20 @@ Bun.serve({
       }
       if (p === "/api/triage/explain" && req.method === "GET") {
         const messageId = url.searchParams.get("messageId") || "";
-        const t = getTriageFull(messageId);
-        if (!t) return bad("not found", 404);
+        let t = getTriageFull(messageId);
+        if (!t) {
+          // Triage on demand: the agent may not have seen this message yet
+          // (or the pill was clicked before the sweep ran). Classify it now
+          // so the sheet always opens — a pill that does nothing is a bug.
+          const { classifyWithRules } = await import("./agent");
+          const msg = (getDb().query("SELECT subject, body, from_email FROM inbox WHERE id = ?").get(messageId) as any)
+            || (getDb().query("SELECT m.subject, m.body, ct.email AS from_email FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?").get(messageId) as any);
+          if (!msg) return bad("not found", 404);
+          const c = classifyWithRules({ from: msg.from_email || "", subject: msg.subject || "", body: msg.body || "" });
+          const { setTriage } = await import("./db");
+          setTriage(messageId, c.category, c.reason, c.confidence, c.source, c.evidence);
+          t = getTriageFull(messageId)!;
+        }
         const fromEmail =
           (getDb().query("SELECT from_email FROM inbox WHERE id = ?").get(messageId) as any)?.from_email ||
           (getDb().query("SELECT ct.email FROM messages m JOIN conversations c ON c.id = m.conversation_id JOIN contacts ct ON ct.id = c.contact_id WHERE m.id = ?").get(messageId) as any)?.email || "";
