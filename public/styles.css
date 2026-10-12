@@ -266,6 +266,15 @@ button.chanpill { font-family: inherit; cursor: pointer; background: none; }
 .msg .subj { font-weight: 600; display: block; margin-bottom: 2px; font-size: 15px; opacity: 0.85; }
 .msg .t { display: block; font-size: 10px; opacity: 0.55; margin-top: 3px; }
 .msg.out .t { text-align: right; }
+/* reply-later park button on each message */
+.laterbtn {
+  border: 0; background: none; cursor: pointer; font-size: 13px; line-height: 1;
+  padding: 4px; margin-left: 6px; vertical-align: middle; opacity: 0.35;
+  filter: grayscale(1); transition: opacity .15s, filter .15s, transform .15s;
+}
+.msg:hover .laterbtn, .laterbtn.on { opacity: 1; filter: none; }
+.laterbtn.on { transform: scale(1.15); }
+.laterbtn:active { transform: scale(0.9); }
 .delivered { align-self: flex-end; font-size: 12px; color: var(--muted); margin: 3px 2px 6px 0; }
 
 /* composer — iOS style */

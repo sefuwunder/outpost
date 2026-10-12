@@ -51,6 +51,31 @@ async function loadConversations() {
   updateMood();
 }
 
+async function loadReplyLater() {
+  const { items } = await api("/api/reply-later");
+  state.laterItems = items || [];
+  renderReplyLater();
+}
+
+function renderReplyLater() {
+  const list = $("later-list");
+  const items = state.laterItems || [];
+  if (!items.length) {
+    list.innerHTML = `<div class="empty">Nothing parked for later.<br><span style="font-size:13px">Tap the ⏰ on any message to park it here.</span></div>`;
+    return;
+  }
+  list.innerHTML = `<div class="section-label" style="margin:8px 4px">Reply later · ${items.length}</div>` + items.map((m) => `
+    <div class="conv" data-id="${m.conversation_id}">
+      <div class="avatar" style="${avatarStyle(m.contact_name)}">${esc(initials(m.contact_name))}</div>
+      <div class="meta">
+        <div class="row1"><h3>${esc(m.contact_name)}</h3><time>${fmtTime(m.created_at)}</time></div>
+        <p><span class="chanpill">⏰ later</span>${m.subject ? `<span class="subj">${esc(m.subject)}</span>` : ""}${esc((m.body || "").slice(0, 80))}</p>
+      </div>
+    </div>`).join("");
+  list.querySelectorAll(".conv").forEach((el) =>
+    el.addEventListener("click", () => openThread(el.dataset.id)));
+}
+
 function renderChips() {
   $("chips").innerHTML = CHIPS.map((c) =>
     `<button data-chip="${c.id}" class="${c.id === state.chip ? "on" : ""}">${c.label}</button>`).join("");
@@ -78,6 +103,8 @@ function renderList() {
     const cat = c.category || "personal";
     const catpill = cat !== "personal" && c.last_email_msg
       ? `<button class="chanpill catbtn" data-mid="${c.last_email_msg}" data-cat="${cat}">${cat}</button>` : "";
+    const laterpill = c.reply_later_count > 0
+      ? `<span class="chanpill" title="${c.reply_later_count} parked for later">⏰${c.reply_later_count > 1 ? " " + c.reply_later_count : ""}</span>` : "";
     const sel = state.selected.has(c.id);
     return `
     <div class="conv${c.unread ? " unread" : ""}${sel ? " sel" : ""}" data-id="${c.id}">
@@ -86,7 +113,7 @@ function renderList() {
       <div class="avatar" style="${avatarStyle(c.contact_name)}">${esc(initials(c.contact_name))}</div>
       <div class="meta">
         <div class="row1"><h3>${esc(c.contact_name)}</h3>${needReply.has(c.id) ? '<span style="color:var(--accent);font-size:13px;font-weight:700">needs reply</span>' : ""}<time>${fmtTime(c.last_at)}</time></div>
-        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${catpill}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
+        <p>${c.last_channel ? `<span class="chanpill">${c.last_channel}</span>` : ""}${catpill}${laterpill}${esc((c.last_body || "").slice(0, 80)) || "<i>No messages yet</i>"}</p>
       </div>
     </div>`;
   }).join("");
@@ -190,13 +217,30 @@ function renderThread() {
     const nx = messages[i + 1];
     const last = !nx || nx.direction !== key || new Date(nx.created_at).getTime() - new Date(m.created_at).getTime() > 5 * 60e3;
     const cls = `msg ${m.direction}${first ? " first" : ""}${last ? " last" : ""}`;
-    html += `<div class="${cls}">${m.subject ? `<span class="subj">${esc(m.subject)}</span>` : ""}${esc(m.body)}</div>`;
+    const laterBtn = `<button class="laterbtn${m.reply_later ? " on" : ""}" data-mid="${m.id}" title="${m.reply_later ? "Unpark" : "Reply later"}">⏰</button>`;
+    html += `<div class="${cls}">${m.subject ? `<span class="subj">${esc(m.subject)}</span>` : ""}${esc(m.body)}${laterBtn}</div>`;
     if (last && m.direction === "out" && i === messages.length - 1)
       html += `<div class="delivered">Delivered</div>`;
     lastKey = key; lastChan = m.channel;
   });
   box.innerHTML = html || `<div class="empty">No messages yet.</div>`;
   box.scrollTop = box.scrollHeight;
+  box.querySelectorAll(".laterbtn").forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const on = !b.classList.contains("on");
+    b.classList.toggle("on", on);
+    b.title = on ? "Unpark" : "Reply later";
+    try {
+      await api(`/api/messages/${b.dataset.mid}/reply-later`, { method: "POST", body: JSON.stringify({ on }) });
+      // keep the in-memory message in sync so re-renders don't flip it back
+      const mm = state.thread.messages.find((x) => x.id === b.dataset.mid);
+      if (mm) mm.reply_later = on ? 1 : 0;
+      toast(on ? "Parked for later." : "Unparked.");
+    } catch (err) {
+      b.classList.toggle("on", !on);
+      toast("Couldn't update. Try again.");
+    }
+  }));
   buildChanTabs();
 }
 
@@ -350,10 +394,11 @@ function setTab(tab) {
   document.querySelectorAll("#main-seg button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   $("inbox-pane").hidden = tab !== "inbox";
   $("chats-pane").hidden = tab !== "chats";
+  $("later-pane").hidden = tab !== "later";
   $("btn-new-contact").style.display = tab === "chats" && !state.selecting ? "" : "none";
   $("btn-select").style.display = tab === "chats" ? "" : "none";
   if (tab !== "chats") exitSelect();
-  if (tab === "inbox") loadInbox(); else loadConversations();
+  if (tab === "inbox") loadInbox(); else if (tab === "later") loadReplyLater(); else loadConversations();
 }
 document.querySelectorAll("#main-seg button").forEach((b) =>
   b.addEventListener("click", () => setTab(b.dataset.tab)));
@@ -745,6 +790,7 @@ async function refresh() {
   if (state.view === "nudges") { loadNudges(); return; }
   if (state.view === "email") { loadInbox(); return; }
   if (state.tab === "inbox") await loadInbox();
+  else if (state.tab === "later") await loadReplyLater();
   else { await loadConversations(); await loadUnknown(); }
   await loadNudges();
 }

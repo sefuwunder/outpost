@@ -20,6 +20,7 @@ export type Channel = "email" | "sms" | "matrix" | "encrypted";
 export interface Message {
   id: string; conversation_id: string; channel: Channel; direction: "in" | "out";
   body: string; subject: string; external_id: string; created_at: string; read: number;
+  reply_later: number;
 }
 export interface UnknownSender {
   id: string; channel: Channel; handle: string; name: string;
@@ -54,7 +55,8 @@ export function openDb(path?: string): Database {
       channel TEXT NOT NULL, direction TEXT NOT NULL,
       body TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '',
       external_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
-      read INTEGER NOT NULL DEFAULT 0
+      read INTEGER NOT NULL DEFAULT 0,
+      reply_later INTEGER NOT NULL DEFAULT 0
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_external ON messages(external_id)
       WHERE external_id != '';
@@ -125,6 +127,11 @@ export function openDb(path?: string): Database {
   const triCols = db.query("PRAGMA table_info(triage)").all() as { name: string }[];
   for (const [col, def] of [["confidence", "REAL NOT NULL DEFAULT 0"], ["source", "TEXT NOT NULL DEFAULT 'rules'"], ["evidence", "TEXT NOT NULL DEFAULT ''"]] as Array<[string, string]>) {
     if (!triCols.some((c) => c.name === col)) db.exec(`ALTER TABLE triage ADD COLUMN ${col} ${def}`);
+  }
+  // Migration: messages.reply_later (older DBs lack the column).
+  const msgCols = db.query("PRAGMA table_info(messages)").all() as { name: string }[];
+  if (!msgCols.some((c) => c.name === "reply_later")) {
+    db.exec("ALTER TABLE messages ADD COLUMN reply_later INTEGER NOT NULL DEFAULT 0");
   }
   // Migration: materialize inbox emails as thread messages. An earlier
   // linkInboxToContact set contact_id without filing messages, so "Open
@@ -377,6 +384,7 @@ export function listConversations(): ConversationRow[] {
       (SELECT channel FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_channel,
       (SELECT direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_direction,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'in' AND m.read = 0) AS unread,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.reply_later = 1) AS reply_later_count,
       COALESCE((SELECT t.category FROM messages m LEFT JOIN triage t ON t.message_id = m.id
         WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1), 'personal') AS category,
       (SELECT m.id FROM messages m WHERE m.conversation_id = c.id AND m.channel = 'email' ORDER BY m.created_at DESC LIMIT 1) AS last_email_msg
@@ -414,6 +422,35 @@ export function listMessages(conversationId: string, limit = 200): Message[] {
   return getDb().query(
     "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?"
   ).all(conversationId, limit) as Message[];
+}
+
+/** Tag/untag a message for "reply later". */
+export function setReplyLater(messageId: string, on: boolean): void {
+  getDb().query("UPDATE messages SET reply_later = ? WHERE id = ?").run(on ? 1 : 0, messageId);
+}
+
+/** Clear all reply-later tags in a conversation (e.g. after the user replies). */
+export function clearReplyLaterForConversation(conversationId: string): void {
+  getDb().query("UPDATE messages SET reply_later = 0 WHERE conversation_id = ? AND reply_later = 1").run(conversationId);
+}
+
+export interface ReplyLaterItem {
+  id: string; conversation_id: string; channel: string; direction: string;
+  body: string; subject: string; created_at: string;
+  contact_id: string; contact_name: string;
+}
+
+/** All messages tagged reply-later, newest first, with their contact. */
+export function listReplyLater(): ReplyLaterItem[] {
+  return getDb().query(`
+    SELECT m.id, m.conversation_id, m.channel, m.direction, m.body, m.subject, m.created_at,
+           ct.id AS contact_id, ct.name AS contact_name
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN contacts ct ON ct.id = c.contact_id
+    WHERE m.reply_later = 1 AND c.archived = 0 AND ct.archived = 0
+    ORDER BY m.created_at DESC
+  `).all() as ReplyLaterItem[];
 }
 export function totalUnread(): number {
   const r = getDb().query(

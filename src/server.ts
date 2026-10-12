@@ -4,6 +4,7 @@ import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listUnknown, promoteUnknown, dismissUnknown, clearAllContacts,
   listActiveNudges, dismissNudge, snoozeNudge, getTriageFull,
   listInbox, getInbox, setInboxRead, deleteInbox, inboxUnread, mirrorTriage, deleteConversations,
+  setReplyLater, listReplyLater, clearReplyLaterForConversation,
   getSetting, setSetting, publicSettings } from "./db";
 import { availableChannels, sendToContact, pollInbox, realTransports, emailReady, type Channel } from "./channels";
 
@@ -86,6 +87,17 @@ Bun.serve({
       if (p === "/api/conversations" && req.method === "GET") {
         return json({ conversations: listConversations(), unread: totalUnread(), lastPoll });
       }
+      if (p === "/api/reply-later" && req.method === "GET") {
+        return json({ items: listReplyLater() });
+      }
+      m = p.match(/^\/api\/messages\/([\w-]+)\/reply-later$/);
+      if (m && req.method === "POST") {
+        const b = await req.json().catch(() => ({})) as { on?: boolean };
+        const msg = getDb().query("SELECT id FROM messages WHERE id = ?").get(m[1]) as any;
+        if (!msg) return bad("not found", 404);
+        setReplyLater(m[1], b.on !== false);
+        return json({ ok: true, on: b.on !== false });
+      }
       if (p === "/api/conversations" && req.method === "DELETE") {
         const b = await req.json().catch(() => ({})) as { ids?: string[] };
         const ids = Array.isArray(b.ids) ? b.ids.filter((x) => typeof x === "string") : [];
@@ -109,6 +121,7 @@ Bun.serve({
         const contact = getContact(contactId);
         if (contact && !availableChannels(contact).includes(channel)) return bad("channel not available for this contact");
         const r = await sendToContact(realTransports(), contactId, channel, body.body || "");
+        if (r.ok) clearReplyLaterForConversation(m[1]); // replied — no longer "later"
         return json(r, r.ok ? 200 : 422);
       }
       if (p === "/api/contacts" && req.method === "GET") {
