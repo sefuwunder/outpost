@@ -193,11 +193,20 @@ async function busCall(run: RunFn, dest: string, path: string, iface: string, me
 const str = (v: any) => (typeof v === "string" ? v : v == null ? "" : String(v));
 const bool = (v: any) => v === true;
 
+/**
+ * Newer GOA (the one on this machine) exposes `MailDisabled` instead of the
+ * older `MailEnabled` — inverted semantics. Accept both shapes.
+ */
+function mailEnabled(acc: Record<string, any>): boolean {
+  if ("MailDisabled" in acc) return acc["MailDisabled"] !== true;
+  return bool(acc["MailEnabled"]);
+}
+
 function toAccount(objectPath: string, ifaces: Record<string, Record<string, any>>): GoaMailAccount | null {
   const acc = ifaces["org.gnome.OnlineAccounts.Account"];
   const mail = ifaces["org.gnome.OnlineAccounts.Mail"];
   if (!acc || !mail) return null;
-  if (!bool(acc["MailEnabled"])) return null;
+  if (!mailEnabled(acc)) return null;
   const email = str(mail["EmailAddress"]) || str(mail["ImapUserName"]) || str(acc["PresentationIdentity"]);
   if (!email) return null;
   return {
@@ -296,6 +305,8 @@ export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, 
         ProviderType: String(acc["ProviderType"] || "").slice(0, 30),
         MailEnabled: acc["MailEnabled"] === true,
         MailEnabledRaw: typeof acc["MailEnabled"],
+        MailDisabled: acc["MailDisabled"] === true,
+        MailDisabledRaw: typeof acc["MailDisabled"],
         hasMailIface: "org.gnome.OnlineAccounts.Mail" in ifaces,
         emailPresent: !!(ifaces["org.gnome.OnlineAccounts.Mail"]?.["EmailAddress"] ||
           ifaces["org.gnome.OnlineAccounts.Mail"]?.["ImapUserName"] || acc["PresentationIdentity"]),

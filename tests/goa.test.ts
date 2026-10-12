@@ -47,6 +47,15 @@ function managedObjectsJson() {
       ["SmtpUseAuth", v("b", true)],
       ["SmtpAuthXoauth2", v("b", true)],
     ])];
+  // Newer GOA exposes MailDisabled (inverted) instead of MailEnabled.
+  const acctNewGoa = (id: string, ptype: string, pname: string, mailDisabled: boolean, ident: string) =>
+    ["org.gnome.OnlineAccounts.Account", props([
+      ["Id", v("s", id)],
+      ["ProviderType", v("s", ptype)],
+      ["ProviderName", v("s", pname)],
+      ["MailDisabled", v("b", mailDisabled)],
+      ["PresentationIdentity", v("s", ident)],
+    ])];
   const ifaces = (list: any[]) => v("a{sa{sv}}", list);
   const objs: any[] = [
     [GOOGLE_PATH, ifaces([acct("goa_account_1001", "google", "Google", true, "ada@gmail.com"),
@@ -62,6 +71,15 @@ function managedObjectsJson() {
     ["/org/gnome/OnlineAccounts/Accounts/1004",
       ifaces([acct("goa_account_1004", "owncloud", "Nextcloud", true, "dave"),
         ["org.gnome.OnlineAccounts.Documents", props([])]])], // no Mail iface
+    // Newer GOA shape: MailDisabled instead of MailEnabled.
+    ["/org/gnome/OnlineAccounts/Accounts/1005",
+      ifaces([acctNewGoa("goa_account_1005", "google", "Google", false, "erin@gmail.com"),
+        mail("erin@gmail.com", "imap.gmail.com", "smtp.gmail.com"),
+        ["org.gnome.OnlineAccounts.OAuth2Based", props([])]])],
+    ["/org/gnome/OnlineAccounts/Accounts/1006",
+      ifaces([acctNewGoa("goa_account_1006", "google", "Google", true, "frank@gmail.com"),
+        mail("frank@gmail.com", "imap.gmail.com", "smtp.gmail.com"),
+        ["org.gnome.OnlineAccounts.OAuth2Based", props([])]])], // MailDisabled → excluded
   ];
   // busctl reports the full reply signature: {"type":"(a{oa{sa{sv}}})","data":[...]}
   return JSON.stringify({ type: "(a{oa{sa{sv}}})", data: [objs] });
@@ -87,7 +105,7 @@ function fakeRun(calls: string[]) {
 test("listGoaMailAccounts parses busctl JSON and filters to mail-enabled accounts", async () => {
   const calls: string[] = [];
   const accts = await goa.listGoaMailAccounts(fakeRun(calls));
-  expect(accts.length).toBe(2);
+  expect(accts.length).toBe(3);
   const g = accts.find((a) => a.id === "goa_account_1001")!;
   expect(g.email).toBe("ada@gmail.com");
   expect(g.providerName).toBe("Google");
@@ -103,6 +121,10 @@ test("listGoaMailAccounts parses busctl JSON and filters to mail-enabled account
   // mail-disabled and no-Mail-iface accounts are excluded
   expect(accts.some((a) => a.id === "goa_account_1003")).toBe(false);
   expect(accts.some((a) => a.id === "goa_account_1004")).toBe(false);
+  // newer GOA shape: MailDisabled=false is mail-enabled, =true is excluded
+  expect(accts.some((a) => a.id === "goa_account_1005")).toBe(true);
+  expect(accts.find((a) => a.id === "goa_account_1005")!.email).toBe("erin@gmail.com");
+  expect(accts.some((a) => a.id === "goa_account_1006")).toBe(false);
 });
 
 test("goaAvailable is false when busctl is missing", async () => {
@@ -183,7 +205,7 @@ test("goaDebug summarizes objects without leaking emails", async () => {
   const calls: string[] = [];
   const d = await goa.goaDebug(fakeRun(calls));
   expect(d.callOk).toBe(true);
-  expect(d.objectCount).toBe(4);
+  expect(d.objectCount).toBe(6);
   const g = d.objects.find((o: any) => o.Id === "goa_account_1001");
   expect(g.ProviderType).toBe("google");
   expect(g.MailEnabled).toBe(true);
