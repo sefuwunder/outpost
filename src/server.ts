@@ -28,6 +28,7 @@ const bad = (error: string, status = 400) => json({ ok: false, error }, status);
 
 // ---------- inbound poll loop (best-effort, never overlapping) ----------
 let polling = false;
+let backfilling = false;
 let lastPoll: { at: string; report: unknown } | null = null;
 async function sweep() {
   if (polling) return;
@@ -274,8 +275,10 @@ Bun.serve({
         return json({ ok: true, lastPoll });
       }
       if (p === "/api/inbox/backfill" && req.method === "POST") {
-        const { backfillInbox } = await import("./channels");
+        if (backfilling) return json({ ok: false, error: "import already running — give it a minute" });
+        backfilling = true;
         try {
+          const { backfillInbox } = await import("./channels");
           const r = await backfillInbox(30, 200);
           const { runAgent } = await import("./agent");
           const agent = runAgent();
@@ -283,6 +286,8 @@ Bun.serve({
           return json({ ok: true, ...r, ...agent });
         } catch (e: any) {
           return json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+        } finally {
+          backfilling = false;
         }
       }
       if (p === "/api/agent/run" && req.method === "POST") {

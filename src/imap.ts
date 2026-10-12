@@ -237,6 +237,13 @@ class Conn {
     this.sock.write(s);
   }
 
+  /** Register the process-wide IMAP slot this connection holds (set by
+   *  connectAndLogin). close() releases it; safe to call repeatedly. */
+  takeSlot(release: () => void) {
+    this.slotRelease = release;
+  }
+  private slotRelease: (() => void) | null = null;
+
   /** Send one tagged command; return the response lines through the tagged OK. */
   async cmd(tag: string, command: string): Promise<string[]> {
     this.write(`${tag} ${command}\r\n`);
@@ -283,14 +290,62 @@ class Conn {
     }
   }
 
-  close() {
-    try { this.write("a999 LOGOUT\r\n"); } catch { /* already gone */ }
+  /** Graceful shutdown: waits for the server to ack LOGOUT (or a timeout)
+   *  before freeing the process-wide slot. Servers count a connection until
+   *  they process the logout — releasing the slot earlier lets the next
+   *  connection open while the server still counts the old one, which is
+   *  exactly how "too many simultaneous connections" happens under churn.
+   *  Idempotent and never throws. */
+  async close(): Promise<void> {
+    const release = this.slotRelease;
+    this.slotRelease = null;
+    const doRelease = () => { if (release) try { release(); } catch { /* never fail a close */ } };
+    try {
+      this.write("a999 LOGOUT\r\n");
+      await Promise.race([
+        (async () => {
+          for (;;) {
+            const line = await this.readLine();
+            if (line.startsWith("a999 ")) return;
+          }
+        })(),
+        new Promise((r) => setTimeout(r, 2500)),
+      ]);
+    } catch { /* already gone */ }
     try { this.sock.end(); } catch { /* already gone */ }
+    doRelease();
   }
 }
 
-function cfgOk(c: ImapConfig): ImapConfig {
-  const host = String(c.host || "").trim();
+/**
+ * Process-wide cap on simultaneous IMAP connections. Providers like Gmail
+ * allow ~15 per account across ALL clients (phone, webmail, …) and answer
+ * "too many simultaneous connections" past that — so outpost never holds
+ * more than a couple, no matter how a sweep, a manual import and a settings
+ * test overlap. Every connection funnels through connectAndLogin, which
+ * takes a slot; Conn.close() gives it back (idempotent).
+ */
+const MAX_IMAP_CONNECTIONS = 2;
+let imapSlots = MAX_IMAP_CONNECTIONS;
+const imapWaiters: Array<() => void> = [];
+
+async function acquireImapSlot(): Promise<void> {
+  if (imapSlots > 0) { imapSlots--; return; }
+  await new Promise<void>((resolve) => { imapWaiters.push(resolve); });
+}
+
+function releaseImapSlot(): void {
+  const w = imapWaiters.shift();
+  if (w) w();
+  else imapSlots++;
+}
+
+/** True when the server refused us for connection pressure — worth a retry. */
+export function isConnectionLimitError(e: any): boolean {
+  return /too many .*connections|\[LIMIT\]|maximum .*connections/i.test(String(e?.message || e || ""));
+}
+
+function cfgOk(c: ImapConfig): ImapConfig {  const host = String(c.host || "").trim();
   const user = String(c.user || "").trim();
   if (!host) throw new ImapError(400, "mail host is required");
   if (!user) throw new ImapError(400, "mail username is required");
@@ -329,22 +384,48 @@ async function xoauth2Login(conn: Conn, user: string, token: string): Promise<vo
 
 /** Connect and log in without selecting a mailbox. */
 async function connectAndLogin(cfg0: ImapConfig): Promise<{ conn: Conn; cfg: ImapConfig }> {
-  const cfg = cfgOk(cfg0);
-  const conn = new Conn();
-  await conn.open(cfg.host, cfg.port!, cfg.secure!);
-  const greet = await conn.readLine();
-  if (!/^\* OK/i.test(greet)) {
-    conn.close();
-    throw new ImapError(502, `mail server did not greet properly: ${greet.slice(0, 80)}`);
+  // On connection-pressure refusals, back off and retry: the limit is
+  // per-account across all of the user's clients, so a moment's wait
+  // usually frees a slot.
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 2000 * attempt));
+    try {
+      return await connectAndLoginOnce(cfg0);
+    } catch (e: any) {
+      lastErr = e;
+      if (!isConnectionLimitError(e)) throw e;
+    }
   }
+  throw lastErr;
+}
+
+async function connectAndLoginOnce(cfg0: ImapConfig): Promise<{ conn: Conn; cfg: ImapConfig }> {
+  await acquireImapSlot();
+  let slotHeld = true;
+  const release = () => { if (slotHeld) { slotHeld = false; releaseImapSlot(); } };
   try {
-    if (cfg.xoauth2Token) await xoauth2Login(conn, cfg.user, cfg.xoauth2Token);
-    else await conn.cmd("a001", `LOGIN ${qstr(cfg.user)} ${qstr(cfg.pass)}`);
+    const cfg = cfgOk(cfg0);
+    const conn = new Conn();
+    conn.takeSlot(release);
+    await conn.open(cfg.host, cfg.port!, cfg.secure!);
+    const greet = await conn.readLine();
+    if (!/^\* OK/i.test(greet)) {
+      await conn.close();
+      throw new ImapError(502, `mail server did not greet properly: ${greet.slice(0, 80)}`);
+    }
+    try {
+      if (cfg.xoauth2Token) await xoauth2Login(conn, cfg.user, cfg.xoauth2Token);
+      else await conn.cmd("a001", `LOGIN ${qstr(cfg.user)} ${qstr(cfg.pass)}`);
+    } catch (e) {
+      await conn.close();
+      throw e;
+    }
+    return { conn, cfg };
   } catch (e) {
-    conn.close();
+    release();
     throw e;
   }
-  return { conn, cfg };
 }
 
 /** Connect, log in, select a mailbox (INBOX by default). Returns the open connection. */
@@ -353,7 +434,7 @@ async function login(cfg0: ImapConfig, mailbox = "INBOX"): Promise<Conn> {
   try {
     await conn.cmd("a002", `SELECT ${qstr(mailbox)}`);
   } catch (e) {
-    conn.close();
+    await conn.close();
     throw e;
   }
   return conn;
@@ -366,7 +447,7 @@ function qstr(s: string): string {
 /** Validate credentials: log in and SELECT INBOX, then disconnect. */
 export async function validateImap(cfg: ImapConfig): Promise<{ ok: true }> {
   const conn = await login(cfg);
-  conn.close();
+  await conn.close();
   return { ok: true };
 }
 
@@ -528,7 +609,7 @@ export async function fetchInboxBody(cfg0: ImapConfig, uid: string, maxChars = 4
     await conn.cmd("r001", "SELECT INBOX");
     return await fetchTextPlain(conn, "r002", uid, maxChars);
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -542,7 +623,7 @@ export async function fetchInboxMessageId(cfg0: ImapConfig, uid: string): Promis
   } catch {
     return "";
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -569,34 +650,70 @@ export async function latestEmailWith(cfg0: ImapConfig, email: string, maxBodyCh
   const { conn } = await connectAndLogin(cfg0);
   try {
     const sentName = await findSentMailbox(conn).catch(() => null);
-    const boxes: { name: string; kind: "inbox" | "sent" }[] = [{ name: "INBOX", kind: "inbox" }];
-    if (sentName && sentName.toUpperCase() !== "INBOX") boxes.push({ name: sentName, kind: "sent" });
-    let best: { kind: "inbox" | "sent"; box: string; uid: string; from: string; subject: string; date: string; dateTime: string; messageId: string } | null = null;
-    for (const box of boxes) {
-      await conn.cmd("e001", `${box.kind === "inbox" ? "SELECT" : "EXAMINE"} ${qstr(box.name)}`);
-      const uids = parseSearchUids(await conn.cmd("e002", `UID SEARCH OR FROM ${qstr(addr)} TO ${qstr(addr)}`));
-      if (!uids.length) continue;
-      const tail = uids.slice(-3);
-      const envs = await fetchEnvelopes(conn, "e003", tail);
-      for (const u of tail) {
-        const e = envs.get(u);
-        if (!e || !e.date) continue;
-        if (!best || e.date >= best.date) {
-          best = { kind: box.kind, box: box.name, uid: u, from: e.from, subject: e.subject, date: e.date, dateTime: e.dateTime || "", messageId: e.messageId };
-        }
+    return await latestEmailWithOnConn(conn, sentName, addr, maxBodyChars);
+  } finally {
+    await conn.close();
+  }
+}
+
+/**
+ * Batched latestEmailWith: one connection for many addresses. The SMS sweep
+ * used to open a fresh connection per GV conversation (rapid open/close
+ * churn is exactly what trips per-account connection limits); this does the
+ * whole sweep on a single connection.
+ */
+export async function latestEmailWithMany(
+  cfg0: ImapConfig, emails: string[], maxBodyChars = 1500
+): Promise<Map<string, EmailContext | null>> {
+  const out = new Map<string, EmailContext | null>();
+  const addrs = [...new Set(
+    emails.map((e) => (e || "").trim().toLowerCase()).filter((a) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a))
+  )];
+  if (!addrs.length) return out;
+  const { conn } = await connectAndLogin(cfg0);
+  try {
+    const sentName = await findSentMailbox(conn).catch(() => null);
+    for (const addr of addrs) {
+      try {
+        out.set(addr, await latestEmailWithOnConn(conn, sentName, addr, maxBodyChars));
+      } catch {
+        out.set(addr, null);
       }
     }
-    if (!best) return null;
-    await conn.cmd("e004", `${best.kind === "inbox" ? "SELECT" : "EXAMINE"} ${qstr(best.box)}`);
-    const body = await fetchTextPlain(conn, "e005", best.uid, maxBodyChars);
-    return {
-      mailbox: best.kind, uid: best.uid, messageId: best.messageId,
-      from: best.from, subject: best.subject, date: best.date, dateTime: best.dateTime, body,
-      direction: extractEmail(best.from).toLowerCase() === addr ? "in" : "out",
-    };
   } finally {
-    conn.close();
+    await conn.close();
   }
+  return out;
+}
+
+async function latestEmailWithOnConn(
+  conn: Conn, sentName: string | null, addr: string, maxBodyChars: number
+): Promise<EmailContext | null> {
+  const boxes: { name: string; kind: "inbox" | "sent" }[] = [{ name: "INBOX", kind: "inbox" }];
+  if (sentName && sentName.toUpperCase() !== "INBOX") boxes.push({ name: sentName, kind: "sent" });
+  let best: { kind: "inbox" | "sent"; box: string; uid: string; from: string; subject: string; date: string; dateTime: string; messageId: string } | null = null;
+  for (const box of boxes) {
+    await conn.cmd("e001", `${box.kind === "inbox" ? "SELECT" : "EXAMINE"} ${qstr(box.name)}`);
+    const uids = parseSearchUids(await conn.cmd("e002", `UID SEARCH OR FROM ${qstr(addr)} TO ${qstr(addr)}`));
+    if (!uids.length) continue;
+    const tail = uids.slice(-3);
+    const envs = await fetchEnvelopes(conn, "e003", tail);
+    for (const u of tail) {
+      const e = envs.get(u);
+      if (!e || !e.date) continue;
+      if (!best || e.date >= best.date) {
+        best = { kind: box.kind, box: box.name, uid: u, from: e.from, subject: e.subject, date: e.date, dateTime: e.dateTime || "", messageId: e.messageId };
+      }
+    }
+  }
+  if (!best) return null;
+  await conn.cmd("e004", `${best.kind === "inbox" ? "SELECT" : "EXAMINE"} ${qstr(best.box)}`);
+  const body = await fetchTextPlain(conn, "e005", best.uid, maxBodyChars);
+  return {
+    mailbox: best.kind, uid: best.uid, messageId: best.messageId,
+    from: best.from, subject: best.subject, date: best.date, dateTime: best.dateTime, body,
+    direction: extractEmail(best.from).toLowerCase() === addr ? "in" : "out",
+  };
 }
 
 /**
@@ -637,7 +754,7 @@ export async function lookupEnvelopesByMessageId(
       }
     }
   } finally {
-    conn.close();
+    await conn.close();
   }
   return out;
 }
@@ -693,7 +810,7 @@ export async function fetchStarred(cfg0: ImapConfig, limit = 200): Promise<Starr
     }
     return mails.reverse(); // newest first
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -745,7 +862,7 @@ export async function fetchUnseen(cfg0: ImapConfig, limit = 50, mailbox = "INBOX
     await conn.cmd("b005", `UID STORE ${picked.join(",")} +FLAGS (\\Seen)`);
     return mails;
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -792,7 +909,7 @@ export async function fetchRecent(cfg0: ImapConfig, days = 30, limit = 200, mail
     }
     return mails.reverse(); // newest first
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -857,7 +974,7 @@ export async function harvestRecentSms(cfg0: ImapConfig, days = 14): Promise<Sms
       scanned: picked.length,
     };
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -898,7 +1015,7 @@ export async function latestGvForward(cfg0: ImapConfig, digits: string, days = 3
     }
     return best;
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -955,7 +1072,7 @@ export async function appendToSent(cfg0: ImapConfig, rawMessage: string): Promis
     const bytes = Buffer.from(rawMessage.replace(/\r?\n/g, "\r\n"), "latin1");
     await conn.cmdLiteral("s010", `APPEND ${qstr(sent)} (\\Seen)`, bytes);
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -1207,7 +1324,7 @@ export async function harvestSentContacts(
       .sort((a, b) => b.count - a.count || a._o - b._o)
       .map(({ name, email, count }) => ({ name, email, count }));
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -1276,7 +1393,7 @@ export async function fetchSentMail(
     }
     return { mailbox: sent, items, maxUid };
   } finally {
-    conn.close();
+    await conn.close();
   }
 }
 
@@ -1499,7 +1616,7 @@ export async function fetchMailAttachments(cfg0: ImapConfig, uids: string[], mai
       } catch { /* one bad message never kills the batch */ }
     }
   } finally {
-    conn.close();
+    await conn.close();
   }
   return out;
 }

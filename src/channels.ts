@@ -442,11 +442,15 @@ export function realTransports(): Transports {
       const icfg = await emailImapConfig();
       const harvest = await imap.harvestRecentSms(icfg, 2);
       const out: Array<{ number: string; name: string; body: string; at: string; messageId: string }> = [];
+      // One connection for all conversations (was: one per conversation).
+      const ctxs = await imap.latestEmailWithMany(
+        icfg, harvest.conversations.map((h) => `${h.number}@txt.voice.google.com`), 1500
+      ).catch(() => new Map());
       for (const h of harvest.conversations) {
-        const ctx = await imap.latestEmailWith(icfg, `${h.number}@txt.voice.google.com`, 1500).catch(() => null);
+        const ctx = ctxs.get(`${h.number}@txt.voice.google.com`);
         // Dedupe-safe: the real message-id lets addMessage skip forwards that
         // ingestEmail already filed as SMS.
-        if (ctx?.snippet) out.push({ number: h.number, name: h.name, body: stripGvFooter(ctx.snippet).trim() || "(empty SMS)", at: ctx.dateTime || ctx.date || new Date().toISOString(), messageId: ctx.messageId || "" });
+        if (ctx?.body) out.push({ number: h.number, name: h.name, body: stripGvFooter(ctx.body).trim() || "(empty SMS)", at: ctx.dateTime || ctx.date || new Date().toISOString(), messageId: ctx.messageId || "" });
       }
       return out;
     },
