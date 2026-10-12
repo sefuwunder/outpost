@@ -240,6 +240,17 @@ export function buildMessage(cfg: SmtpConfig, opts: SendMailOpts): string {
 export async function sendMail(cfg0: SmtpConfig, opts: SendMailOpts): Promise<{ ok: true }> {
   const cfg = { ...cfg0 };
   if (!cfg.host || !cfg.from) throw new SmtpError(400, "SMTP is not configured — add it in Settings");
+  return sendRawMail(cfg, opts.to, buildMessage(cfg, opts));
+}
+
+/**
+ * SMTP-send a prebuilt RFC822 message. Splitting build from send lets the
+ * caller APPEND the byte-identical message to the Sent folder afterwards
+ * (Geary's save_sent_mail) instead of rebuilding it and drifting.
+ */
+export async function sendRawMail(cfg0: SmtpConfig, to: string[], rawMessage: string): Promise<{ ok: true }> {
+  const cfg = { ...cfg0 };
+  if (!cfg.host || !cfg.from) throw new SmtpError(400, "SMTP is not configured — add it in Settings");
   const conn = new SmtpConn();
   await conn.open(cfg.host, cfg.port || 465, cfg.secure === "ssl");
   try {
@@ -259,11 +270,11 @@ export async function sendMail(cfg0: SmtpConfig, opts: SendMailOpts): Promise<{ 
       await conn.cmd(235, b64(cfg.pass));
     }
     await conn.cmd(250, `MAIL FROM:<${cfg.from}>`);
-    for (const rcpt of opts.to) {
+    for (const rcpt of to) {
       await conn.cmd([250, 251], `RCPT TO:<${rcpt}>`);
     }
     await conn.cmd(354, "DATA");
-    conn.sock.write(buildMessage(cfg, opts) + "\r\n.\r\n");
+    conn.sock.write(rawMessage + "\r\n.\r\n");
     const dataReply = await conn.readReply();
     if (dataReply.code !== 250) throw new SmtpError(dataReply.code, `message rejected: ${dataReply.text.split("\n")[0]}`);
     try { await conn.cmd(221, "QUIT"); } catch { /* noop */ }

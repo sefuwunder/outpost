@@ -254,6 +254,35 @@ class Conn {
     }
   }
 
+  /**
+   * Send a tagged command carrying a literal argument (IMAP APPEND): write
+   * the command line with `{bytes}`, wait for the "+" continuation, then
+   * send the literal. Returns response lines through the tagged OK.
+   */
+  async cmdLiteral(tag: string, command: string, literal: Buffer): Promise<string[]> {
+    this.write(`${tag} ${command} {${literal.length}}\r\n`);
+    for (;;) {
+      const line = await this.readLine();
+      if (line.startsWith("+")) break;
+      if (line.startsWith(`${tag} `)) {
+        const rest = line.slice(tag.length + 1).trim();
+        throw new ImapError(502, `mail server refused literal: ${rest.replace(/^(NO|BAD)\s*/i, "").slice(0, 120) || rest}`);
+      }
+      // ignore untagged chatter while waiting for the continuation
+    }
+    this.write(literal.toString("latin1"));
+    const out: string[] = [];
+    for (;;) {
+      const line = await this.readLine();
+      if (line.startsWith(`${tag} `)) {
+        const rest = line.slice(tag.length + 1);
+        if (/^OK\b/i.test(rest)) return out;
+        throw new ImapError(502, `mail server refused: ${rest.replace(/^(NO|BAD)\s*/i, "").trim().slice(0, 160) || rest}`);
+      }
+      out.push(line);
+    }
+  }
+
   close() {
     try { this.write("a999 LOGOUT\r\n"); } catch { /* already gone */ }
     try { this.sock.end(); } catch { /* already gone */ }
@@ -876,7 +905,7 @@ export async function latestGvForward(cfg0: ImapConfig, digits: string, days = 3
 /** Find the sent mailbox: "Sent", "[Gmail]/Sent Mail", "Sent Items", … */
 async function findSentMailbox(conn: Conn): Promise<string | null> {
   const lines = await conn.cmd("h002", 'LIST "" "*"');
-  const names: string[] = [];
+  const boxes: { name: string; flags: string[] }[] = [];
   for (const line of lines) {
     const rest = line.replace(/^\* LIST\s+/i, "");
     if (rest === line) continue;
@@ -888,8 +917,16 @@ async function findSentMailbox(conn: Conn): Promise<string | null> {
       parts.push(v);
       r = nr;
     }
-    if (typeof parts[2] === "string") names.push(parts[2]);
+    if (typeof parts[2] === "string") {
+      const flags = Array.isArray(parts[0]) ? parts[0].map((f: any) => String(f).toLowerCase()) : [];
+      boxes.push({ name: parts[2], flags });
+    }
   }
+  // Prefer the RFC 6154 special-use flag, like Geary does — immune to
+  // localized folder names ("Gesendet", "Envoyés", ...).
+  const special = boxes.find((b) => b.flags.includes("\\sent"));
+  if (special) return special.name;
+  const names = boxes.map((b) => b.name);
   const tests: RegExp[] = [
     /^sent$/i,
     /^\[gmail\]\/sent mail$/i,
@@ -901,6 +938,25 @@ async function findSentMailbox(conn: Conn): Promise<string | null> {
     if (hit) return hit;
   }
   return null;
+}
+
+/**
+ * Save a sent message to the server's Sent folder (IMAP APPEND, flagged
+ * \Seen) — Geary's `save_sent_mail`. This is what keeps outpost's outbox in
+ * sync with the mail server: providers that don't auto-save SMTP mail would
+ * otherwise never show sent mail anywhere but outpost's local DB. Throws
+ * when no Sent folder exists or the server refuses.
+ */
+export async function appendToSent(cfg0: ImapConfig, rawMessage: string): Promise<void> {
+  const { conn } = await connectAndLogin(cfg0);
+  try {
+    const sent = await findSentMailbox(conn);
+    if (!sent) throw new ImapError(502, "couldn't find a Sent folder in this mailbox");
+    const bytes = Buffer.from(rawMessage.replace(/\r?\n/g, "\r\n"), "latin1");
+    await conn.cmdLiteral("s010", `APPEND ${qstr(sent)} (\\Seen)`, bytes);
+  } finally {
+    conn.close();
+  }
 }
 
 function envelopeAddrs(env: any[]): { name: string; email: string }[] {

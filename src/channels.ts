@@ -7,12 +7,13 @@ import {
   getE2EEState, setE2EEState, delE2EEState,
   type Channel, type Contact,
 } from "./db";
-import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail, type ImapConfig } from "./imap";
+import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail, type ImapConfig, type SentMailItem } from "./imap";
 import type { SmtpConfig } from "./smtp";
 import type { RunFn } from "./goa";
 
 export interface Transports {
-  sendEmail(to: string, subject: string, text: string): Promise<void>;
+  /** Sends an email; resolves with the wire Message-ID (for Sent dedupe). */
+  sendEmail(to: string, subject: string, text: string): Promise<{ messageId: string }>;
   sendSms(digits: string, text: string): Promise<void>;
   sendMatrix(contact: Contact, text: string): Promise<void>;
   sendEncrypted(handle: string, text: string): Promise<void>;
@@ -89,7 +90,15 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
   try {
     if (channel === "email") {
       if (!c.email) return { ok: false, error: "no email address" };
-      await t.sendEmail(c.email, "", text);
+      const { messageId } = await t.sendEmail(c.email, "", text);
+      const conv = conversationFor(c.id);
+      // File under the wire Message-ID so the Sent-folder import dedupes
+      // against this record instead of showing the message twice.
+      const m = addMessage({
+        conversation_id: conv.id, channel, direction: "out", body: text,
+        external_id: `email:${messageId}`, subject: "",
+      });
+      return { ok: true, messageId: m!.id };
     } else if (channel === "sms") {
       if (!c.phone) return { ok: false, error: "no phone number" };
       await t.sendSms(c.phone, text);
@@ -169,6 +178,26 @@ function ingestGvSms(m: UnseenMail, digits: string, at: string, report: PollRepo
   }
 }
 
+/**
+ * Ingest one Sent-folder item: the server-side copy of mail we (or another
+ * client) sent. Dedupes against the local outbox record via Message-ID, so
+ * a message sent from outpost appears once, not twice.
+ */
+export function ingestSentEmail(m: SentMailItem, report: PollReport): void {
+  const extId = m.messageId ? `email:${m.messageId}` : `email:sent-uid-${m.uid}`;
+  const toAddr = (m.to || []).map((a) => a.toLowerCase().trim()).find((a) => a.includes("@")) || "";
+  if (!toAddr) return;
+  const c = findContactByEmail(toAddr);
+  if (!c) return; // recipient isn't a contact — nothing to thread into
+  const conv = conversationFor(c.id);
+  const added = addMessage({
+    conversation_id: conv.id, channel: "email", direction: "out",
+    body: m.body || "", subject: m.subject || "",
+    external_id: extId, created_at: m.dateTime || m.date || new Date().toISOString(),
+  });
+  if (added) report.email++;
+}
+
 /** One-time backfill: recent mail regardless of \Seen, into the inbox.
  *  Read-only on the server (no flags touched). Bounded by limit. */
 export async function backfillInbox(days = 30, limit = 200, secure = true): Promise<PollReport> {
@@ -186,6 +215,20 @@ export function emailProvider(): "manual" | "goa" {
   return getSetting("email_provider") === "goa" ? "goa" : "manual";
 }
 
+/**
+ * True when the provider saves SMTP-sent mail to Sent itself (Geary sets
+ * save_sent=false for these): Gmail and Outlook/Office365 both do. For every
+ * other provider outpost APPENDs the sent message to Sent itself.
+ */
+export function providerAutoSavesSent(): boolean {
+  if (emailProvider() === "goa") {
+    const pt = (getSetting("goa_provider_type") || "").toLowerCase();
+    return pt === "google" || pt === "windows_live" || pt.includes("outlook") || pt.includes("microsoft");
+  }
+  const hosts = `${getSetting("imap_host") || ""} ${getSetting("smtp_host") || ""}`.toLowerCase();
+  return /gmail|googlemail|outlook|office365|hotmail|live\.com/.test(hosts);
+}
+
 /** True when the email channel can be used. */
 export function emailReady(): boolean {
   if (emailProvider() === "goa") return !!getSetting("goa_account");
@@ -199,6 +242,8 @@ async function goaAccountOrThrow(run?: RunFn) {
   const accts = await goa.listGoaMailAccounts(run);
   const acct = accts.find((a) => a.id === id);
   if (!acct) throw new Error(`GNOME account "${id}" is gone — is it still enabled for Mail?`);
+  // Cache for providerAutoSavesSent() (Gmail/Outlook auto-save sent mail).
+  try { setSetting("goa_provider_type", acct.providerType || ""); } catch { /* non-fatal */ }
   return { acct, creds: await goa.getGoaCredentials(acct, run), goa };
 }
 
@@ -249,6 +294,20 @@ export async function pollInbox(t: Transports): Promise<PollReport> {
   // --- email: UNSEEN only; the backfill covers already-read mail ---
   try {
     for (const m of await t.fetchEmail()) ingestEmail(m, report);
+  } catch { /* channel down — next sweep */ }
+
+  // --- sent mail: new items in the Sent folder (UID watermark in settings).
+  // This is the other half of outbox sync: mail sent from outpost is APPENDed
+  // to Sent at send time, and mail sent from other clients (phone/webmail)
+  // shows up here. Dedupes against local outbox records by Message-ID. ---
+  try {
+    if (emailReady()) {
+      const imap = require("./imap") as typeof import("./imap");
+      const lastUid = Number(getSetting("sent_last_uid") || 0) || null;
+      const { items, maxUid } = await imap.fetchSentMail(await emailImapConfig(), lastUid, { backfillDays: 90, max: 200 });
+      for (const it of items) ingestSentEmail(it, report);
+      if (maxUid !== null && Number.isFinite(maxUid)) setSetting("sent_last_uid", String(maxUid));
+    }
   } catch { /* channel down — next sweep */ }
 
   // --- sms via google voice forwards: match by digits ---
@@ -342,10 +401,27 @@ export function realTransports(): Transports {
 
   return {
     sendEmail: async (to, subject, text) => {
-      await smtp.sendMail(await emailSmtpConfig(), { to, subject: subject || "outpost", text });
+      const smtpCfg = await emailSmtpConfig();
+      const messageId = smtp.newMessageId();
+      // Build once: the byte-identical message goes over SMTP and (below)
+      // into the Sent folder, like Geary's save_sent_mail.
+      const raw = smtp.buildMessage(smtpCfg, { to: [to], subject: subject || "outpost", text, messageId });
+      await smtp.sendRawMail(smtpCfg, [to], raw);
+      // Keep the server's Sent folder in sync — providers that don't
+      // auto-save SMTP mail would otherwise never show it. Best-effort:
+      // the local outbox record already exists, so a failed APPEND only
+      // delays the server-side copy until the next successful send.
+      if (!providerAutoSavesSent()) {
+        try {
+          await imap.appendToSent(await emailImapConfig(), raw);
+        } catch (e: any) {
+          console.warn(`[outpost] Sent APPEND failed (best-effort): ${e?.message || e}`);
+        }
+      }
+      return { messageId };
     },
     sendSms: async (digits, text) => {
-      await smtp.sendMail(await emailSmtpConfig(), { to: smtp.gvGatewayAddress(digits), subject: "outpost", text });
+      await smtp.sendMail(await emailSmtpConfig(), { to: [smtp.gvGatewayAddress(digits)], subject: "outpost", text });
     },
     sendMatrix: async (contact, text) => {
       const roomId = getSetting(`matrix_room:${contact.id}`);

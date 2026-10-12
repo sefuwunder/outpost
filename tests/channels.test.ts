@@ -16,7 +16,7 @@ const inbox = {
   encrypted: [] as any[],
 };
 const stub: ch.Transports = {
-  sendEmail: async (to, _s, text) => { sent.push({ kind: "email", to, text }); },
+  sendEmail: async (to, _s, text) => { sent.push({ kind: "email", to, text }); return { messageId: "<wire-mid>" }; },
   sendSms: async (digits, text) => { sent.push({ kind: "sms", to: digits, text }); },
   sendMatrix: async (contact, text) => { sent.push({ kind: "matrix", to: contact.matrix_id, text }); },
   sendEncrypted: async (handle, text) => { sent.push({ kind: "encrypted", to: handle, text }); },
@@ -166,4 +166,51 @@ test("poll: dead channel doesn't sink the sweep", async () => {
   inbox.sms = [{ number: "5550004444", name: "", body: "still works", at: new Date().toISOString(), messageId: "s9" }];
   const rep = await ch.pollInbox(bad);
   expect(rep.sms).toBe(1);
+});
+
+test("email send files the wire Message-ID so the Sent import dedupes", async () => {
+  const c = db.createContact({ name: "G", email: "g@x.com" });
+  const r = await ch.sendToContact(stub, c.id, "email", "hello");
+  expect(r.ok).toBe(true);
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].external_id).toBe("email:<wire-mid>");
+  expect(msgs[0].direction).toBe("out");
+  // The Sent-folder copy of the same message dedupes instead of doubling.
+  const rep = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
+  ch.ingestSentEmail({ uid: "99", to: ["g@x.com"], subject: "", date: "", dateTime: new Date().toISOString(), messageId: "<wire-mid>", body: "hello" }, rep);
+  expect(rep.email).toBe(0);
+  expect(db.listMessages(db.conversationFor(c.id).id).length).toBe(1);
+});
+
+test("ingestSentEmail threads mail sent from another client", async () => {
+  const c = db.createContact({ name: "H", email: "h@x.com" });
+  const rep = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
+  ch.ingestSentEmail({ uid: "100", to: ["H@x.com"], subject: "hi", date: "", dateTime: "2026-10-12T09:00:00Z", messageId: "<other-mid>", body: "from my phone" }, rep);
+  expect(rep.email).toBe(1);
+  const msgs = db.listMessages(db.conversationFor(c.id).id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].direction).toBe("out");
+  expect(msgs[0].external_id).toBe("email:<other-mid>");
+  expect(msgs[0].body).toBe("from my phone");
+  // unknown recipients are skipped, not crashed on
+  ch.ingestSentEmail({ uid: "101", to: ["stranger@y.com"], subject: "", date: "", dateTime: "", messageId: "<x>", body: "?" }, rep);
+  expect(rep.email).toBe(1);
+});
+
+test("providerAutoSavesSent: gmail/outlook skip the APPEND, others don't", () => {
+  db.setSetting("email_provider", "manual");
+  db.setSetting("imap_host", "imap.gmail.com");
+  db.setSetting("smtp_host", "smtp.gmail.com");
+  expect(ch.providerAutoSavesSent()).toBe(true);
+  db.setSetting("imap_host", "mail.example.com");
+  db.setSetting("smtp_host", "mail.example.com");
+  expect(ch.providerAutoSavesSent()).toBe(false);
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_provider_type", "google");
+  expect(ch.providerAutoSavesSent()).toBe(true);
+  db.setSetting("goa_provider_type", "windows_live");
+  expect(ch.providerAutoSavesSent()).toBe(true);
+  db.setSetting("goa_provider_type", "generic");
+  expect(ch.providerAutoSavesSent()).toBe(false);
 });

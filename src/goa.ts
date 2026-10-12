@@ -12,7 +12,10 @@
 //     ImapUseSsl/Tls, SmtpHost/UserName, SmtpUseSsl/Tls/Auth, SmtpAuthXoauth2
 //   org.gnome.OnlineAccounts.OAuth2Based.GetAccessToken() → fresh token
 //     (goa-daemon refreshes it from the keyring-stored refresh token)
-//   org.gnome.OnlineAccounts.PasswordBased.GetPassword("imap"|"smtp")
+//   org.gnome.OnlineAccounts.Account.EnsureCredentials() first, per the GOA
+//     docs — this is what refreshes expired credentials
+//   org.gnome.OnlineAccounts.PasswordBased.GetPassword("imap-password" |
+//     "smtp-password") — these are the ids GOA's own backends store under
 //
 // Tokens/passwords are fetched on demand and never written to outpost's DB.
 
@@ -281,14 +284,22 @@ export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, 
 
 /** Fetch fresh credentials for one account. Tokens come from the keyring via goa-daemon. */
 export async function getGoaCredentials(acct: GoaMailAccount, run: RunFn = defaultRun): Promise<GoaCredentials> {
+  // Per the GOA docs (and Geary's GoaMediator): ensure credentials first —
+  // this refreshes expired tokens/passwords from the keyring before we ask
+  // for them. A failure here means the account needs re-auth in Settings.
+  try {
+    await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.Account", "EnsureCredentials");
+  } catch (e: any) {
+    throw new GoaError("auth", `GOA account ${acct.email}: credentials need refresh — re-authenticate in GNOME Settings (${String(e?.message || e).slice(0, 120)})`);
+  }
   if (acct.oauth2) {
     const [token] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.OAuth2Based", "GetAccessToken");
     if (typeof token !== "string" || !token) throw new GoaError("auth", `GOA account ${acct.email}: no access token`);
     return { user: acct.email, oauth2: true, token };
   }
   if (acct.passwordBased) {
-    const [imapPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "imap");
-    const [smtpPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "smtp");
+    const [imapPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "imap-password");
+    const [smtpPassword] = await busCall(run, GOA_BUS, acct.objectPath, "org.gnome.OnlineAccounts.PasswordBased", "GetPassword", "s", "smtp-password");
     if (!imapPassword) throw new GoaError("auth", `GOA account ${acct.email}: no stored IMAP password`);
     return { user: acct.email, oauth2: false, imapPassword: String(imapPassword), smtpPassword: String(smtpPassword || "") };
   }

@@ -73,6 +73,7 @@ function fakeRun(calls: string[]) {
     const m = args.indexOf("call");
     const method = args[m + 4];
     if (method === "GetManagedObjects") return { code: 0, stdout: managedObjectsJson(), stderr: "" };
+    if (method === "EnsureCredentials") return { code: 0, stdout: JSON.stringify({ type: "()", data: [] }), stderr: "" };
     if (method === "GetAccessToken") return { code: 0, stdout: JSON.stringify({ type: "(s)", data: ["ya29.faketoken"] }), stderr: "" };
     if (method === "GetPassword") {
       const id = args[args.length - 1];
@@ -128,15 +129,34 @@ test("OAuth2 credentials come from GetAccessToken", async () => {
   expect(creds.user).toBe("ada@gmail.com");
   expect(calls.some((c) => c.includes("OAuth2Based GetAccessToken"))).toBe(true);
   expect(calls.some((c) => c.includes(GOOGLE_PATH))).toBe(true);
+  // EnsureCredentials runs first, per the GOA docs (Geary does the same)
+  const ensureIdx = calls.findIndex((c) => c.includes("Account EnsureCredentials"));
+  const tokenIdx = calls.findIndex((c) => c.includes("OAuth2Based GetAccessToken"));
+  expect(ensureIdx).toBeGreaterThanOrEqual(0);
+  expect(ensureIdx).toBeLessThan(tokenIdx);
 });
 
-test("password credentials come from GetPassword imap/smtp", async () => {
+test("EnsureCredentials failure becomes a re-authenticate error", async () => {
+  const calls: string[] = [];
+  const base = fakeRun(calls);
+  const run: goa.RunFn = async (cmd, args) => {
+    if (args.includes("EnsureCredentials")) return { code: 1, stdout: "", stderr: "GDBus.Error:org.gnome.OnlineAccounts.Error.NotAuthorized" };
+    return base(cmd, args);
+  };
+  const accts = await goa.listGoaMailAccounts(base);
+  await expect(goa.getGoaCredentials(accts[0], run)).rejects.toThrow(/re-authenticate in GNOME Settings/);
+});
+
+test("password credentials come from GetPassword imap-password/smtp-password", async () => {
   const calls: string[] = [];
   const accts = await goa.listGoaMailAccounts(fakeRun(calls));
   const creds = await goa.getGoaCredentials(accts[1], fakeRun(calls));
   expect(creds.oauth2).toBe(false);
-  expect(creds.imapPassword).toBe("pw-for-imap");
-  expect(creds.smtpPassword).toBe("pw-for-smtp");
+  expect(creds.imapPassword).toBe("pw-for-imap-password");
+  expect(creds.smtpPassword).toBe("pw-for-smtp-password");
+  // GOA's own backends store under these ids (Geary uses them too)
+  expect(calls.some((c) => c.includes("GetPassword s imap-password"))).toBe(true);
+  expect(calls.some((c) => c.includes("GetPassword s smtp-password"))).toBe(true);
 });
 
 test("goaImapCfg/goaSmtpCfg map TLS flags to standard ports", async () => {
