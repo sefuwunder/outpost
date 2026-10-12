@@ -5,7 +5,7 @@ import { openDb, getDb, listContacts, getContact, createContact, updateContact,
   listActiveNudges, dismissNudge, snoozeNudge, getTriageFull,
   listInbox, getInbox, setInboxRead, deleteInbox, inboxUnread, mirrorTriage, deleteConversations,
   getSetting, setSetting, publicSettings } from "./db";
-import { availableChannels, sendToContact, pollInbox, realTransports, type Channel } from "./channels";
+import { availableChannels, sendToContact, pollInbox, realTransports, emailReady, type Channel } from "./channels";
 
 const PORT = Number(process.env.PORT || 3029);
 const root = new URL("../public/", import.meta.url).pathname;
@@ -39,13 +39,14 @@ async function sweep() {
     const agent = runAgent(Date.now(), { llm: true });
     // First-run bootstrap: the inbox promises 30 days, but the poller only
     // sees UNSEEN mail — backfill recent mail once while the inbox is empty.
+    // (emailReady covers both manual IMAP and GOA.)
     let backfilled: unknown = null;
-    if (!getSetting("inbox_backfilled") && getSetting("imap_host") && getSetting("imap_user")) {
+    if (!getSetting("inbox_backfilled") && emailReady()) {
       const n = (getDb().query("SELECT COUNT(*) AS n FROM inbox").get() as { n: number }).n;
       if (n === 0) {
         try {
           const { backfillInbox } = await import("./channels");
-          backfilled = await backfillInbox(30, 200);
+          backfilled = await backfillInbox(30, 500);
           runAgent();
         } catch (e: any) {
           backfilled = { error: String(e?.message || e).slice(0, 200) };
@@ -279,7 +280,7 @@ Bun.serve({
         backfilling = true;
         try {
           const { backfillInbox } = await import("./channels");
-          const r = await backfillInbox(30, 200);
+          const r = await backfillInbox(30, 500);
           const { runAgent } = await import("./agent");
           const agent = runAgent();
           setSetting("inbox_backfilled", "1");

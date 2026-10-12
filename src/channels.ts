@@ -200,7 +200,7 @@ export function ingestSentEmail(m: SentMailItem, report: PollReport): void {
 
 /** One-time backfill: recent mail regardless of \Seen, into the inbox.
  *  Read-only on the server (no flags touched). Bounded by limit. */
-export async function backfillInbox(days = 30, limit = 200, secure = true): Promise<PollReport> {
+export async function backfillInbox(days = 30, limit = 500, secure = true): Promise<PollReport> {
   const imap = require("./imap") as typeof import("./imap");
   if (!emailReady())
     throw new Error("email not configured — add it in ⚙️ Channels first");
