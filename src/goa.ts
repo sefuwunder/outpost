@@ -19,7 +19,10 @@
 //
 // Tokens/passwords are fetched on demand and never written to outpost's DB.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export class GoaError extends Error {
   kind: "unavailable" | "call-failed" | "no-account" | "auth";
@@ -135,6 +138,27 @@ function busData(v: any): any {
 const GOA_BUS = "org.gnome.OnlineAccounts";
 const GOA_ROOT = "/org/gnome/OnlineAccounts";
 
+/**
+ * Short hash of the running source files. Reported by goaDebug() so a pasted
+ * debug blob proves exactly which build is answering — no more guessing
+ * whether a stale build is still listening on :3029.
+ */
+let _codeHash: string | null = null;
+export function codeHash(): string {
+  if (_codeHash) return _codeHash;
+  try {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const h = createHash("sha1");
+    for (const f of ["goa.ts", "server.ts", "channels.ts", "imap.ts", "smtp.ts"]) {
+      h.update(readFileSync(join(dir, f)));
+    }
+    _codeHash = h.digest("hex").slice(0, 12);
+  } catch {
+    _codeHash = "unknown";
+  }
+  return _codeHash;
+}
+
 async function busCall(run: RunFn, dest: string, path: string, iface: string, method: string, ...args: string[]): Promise<any[]> {
   let res: { code: number; stdout: string; stderr: string };
   try {
@@ -239,6 +263,7 @@ export async function goaDebug(run: RunFn = defaultRun): Promise<Record<string, 
     error: null as string | null,
     objectCount: 0,
     objects: [] as any[],
+    codeHash: codeHash(),
   };
   try {
     const v = await run("busctl", ["--version"]);

@@ -661,7 +661,12 @@ function updateMailProviderUI() {
   $("goa-box").hidden = !goa;
   $("manual-mail").hidden = goa;
 }
-$("s-email_provider").addEventListener("change", updateMailProviderUI);
+$("s-email_provider").addEventListener("change", () => {
+  updateMailProviderUI();
+  // (Re)load the account list when switching to GOA — otherwise the picker
+  // keeps whatever the settings page happened to fetch on open (or nothing).
+  if ($("s-email_provider").value === "goa") loadGoaAccounts($("s-goa_account").value || "");
+});
 
 async function loadGoaAccounts(selected) {
   updateMailProviderUI();
