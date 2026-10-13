@@ -97,7 +97,8 @@ export function openDb(path?: string): Database {
     -- inbox: every inbound email, contact or not (the 30-day home view)
     CREATE TABLE IF NOT EXISTS inbox (
       id TEXT PRIMARY KEY, from_email TEXT NOT NULL DEFAULT '', from_name TEXT NOT NULL DEFAULT '',
-      subject TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', at TEXT NOT NULL,
+      subject TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', html_body TEXT NOT NULL DEFAULT '',
+      at TEXT NOT NULL,
       external_id TEXT UNIQUE, contact_id TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
       read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
@@ -132,6 +133,11 @@ export function openDb(path?: string): Database {
   const msgCols = db.query("PRAGMA table_info(messages)").all() as { name: string }[];
   if (!msgCols.some((c) => c.name === "reply_later")) {
     db.exec("ALTER TABLE messages ADD COLUMN reply_later INTEGER NOT NULL DEFAULT 0");
+  }
+  // Migration: inbox.html_body (older DBs lack the column).
+  const inboxCols = db.query("PRAGMA table_info(inbox)").all() as { name: string }[];
+  if (!inboxCols.some((c) => c.name === "html_body")) {
+    db.exec("ALTER TABLE inbox ADD COLUMN html_body TEXT NOT NULL DEFAULT ''");
   }
   // Migration: materialize inbox emails as thread messages. An earlier
   // linkInboxToContact set contact_id without filing messages, so "Open
@@ -503,7 +509,7 @@ export interface InboxRow {
 
 /** Insert an inbound email; dedupe by external_id. Returns the row id. */
 export function upsertInbox(e: {
-  from_email: string; from_name?: string; subject?: string; body?: string; at: string;
+  from_email: string; from_name?: string; subject?: string; body?: string; html_body?: string; at: string;
   external_id?: string | null; contact_id?: string; message_id?: string;
 }): string {
   const d = getDb();
@@ -520,8 +526,8 @@ export function upsertInbox(e: {
     }
   }
   const id = "inb_" + uid();
-  d.query("INSERT INTO inbox(id, from_email, from_name, subject, body, at, external_id, contact_id, message_id, read, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-    .run(id, e.from_email, e.from_name || "", e.subject || "", e.body || "", e.at, ext,
+  d.query("INSERT INTO inbox(id, from_email, from_name, subject, body, html_body, at, external_id, contact_id, message_id, read, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(id, e.from_email, e.from_name || "", e.subject || "", e.body || "", e.html_body || "", e.at, ext,
       e.contact_id || "", e.message_id || "", 0, nowIso());
   return id;
 }

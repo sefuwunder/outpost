@@ -577,6 +577,37 @@ async function fetchSnippets(conn: Conn, tag: string, uids: string[], maxChars =
   return out;
 }
 
+// Best-effort HTML bodies; a failure here never fails the import.
+// Fetches the full MIME message (up to HTML_FETCH_BYTES) and extracts the
+// first text/html part. Batched per poll like fetchSnippets.
+const HTML_FETCH_BYTES = 65536;
+async function fetchHtmlBodies(conn: Conn, tag: string, uids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const lines = await conn.cmd(tag, `UID FETCH ${uids.join(",")} (UID BODY.PEEK[]<0.${HTML_FETCH_BYTES}>)`);
+    let cur: string[] = [];
+    const flush = () => {
+      if (!cur.length) return;
+      const joined = cur.join("\r\n");
+      cur = [];
+      const um = joined.match(/UID (\d+)/i);
+      if (!um) return;
+      const lm = joined.match(/\{(\d+)\}\r?\n([\s\S]*)$/);
+      const raw = lm ? lm[2].slice(0, Number(lm[1])) : "";
+      const html = decodeMimeHtml(raw);
+      if (html) out.set(um[1], html.slice(0, HTML_FETCH_BYTES));
+    };
+    for (const line of lines) {
+      if (/^\* \d+ FETCH/i.test(line) && cur.length) flush();
+      cur.push(line);
+    }
+    flush();
+  } catch {
+    /* html fetch is optional — text bodies already succeeded */
+  }
+  return out;
+}
+
 /** Fetch up to maxChars of plain text for one UID; "" on any failure. */
 async function fetchTextPlain(conn: Conn, tag: string, uid: string, maxChars: number): Promise<string> {
   try {
@@ -825,6 +856,7 @@ export interface UnseenMail {
   dateTime: string;
   snippet: string; // 280-char preview for list views
   body: string;    // fuller decoded text (4000 chars) for stored messages
+  html?: string;   // decoded text/html part ("" when none) for rich rendering
   returnPath: string;
   messageId: string; // ENVELOPE message-id — used to thread SMS replies
 }
@@ -841,6 +873,7 @@ export async function fetchUnseen(cfg0: ImapConfig, limit = 50, mailbox = "INBOX
     // list preview is just a prefix of it. (The poller used to store the
     // 280-char snippet as the whole message body, truncating longer mail.)
     const bodies = await fetchSnippets(conn, "b003", picked, bodyChars);
+    const htmlBodies = await fetchHtmlBodies(conn, "b003h", picked);
     const rps = await fetchReturnPaths(conn, "b004", picked);
     const mails: UnseenMail[] = [];
     for (const uid of picked) {
@@ -855,6 +888,7 @@ export async function fetchUnseen(cfg0: ImapConfig, limit = 50, mailbox = "INBOX
         dateTime: e.dateTime || "",
         snippet: body.slice(0, 280),
         body,
+        html: htmlBodies.get(uid) || "",
         returnPath: rps.get(uid) || "",
         messageId: e.messageId || "",
       });
@@ -889,6 +923,7 @@ export async function fetchRecent(cfg0: ImapConfig, days = 30, limit = 200, mail
     const picked = uids.slice(-Math.min(limit, 500));
     const envs = await fetchEnvelopes(conn, "c002", picked);
     const bodies = await fetchSnippets(conn, "c003", picked, 4000);
+    const htmlBodies = await fetchHtmlBodies(conn, "c003h", picked);
     const rps = await fetchReturnPaths(conn, "c004", picked);
     const mails: UnseenMail[] = [];
     for (const uid of picked) {
@@ -903,6 +938,7 @@ export async function fetchRecent(cfg0: ImapConfig, days = 30, limit = 200, mail
         dateTime: e.dateTime || "",
         snippet: body.slice(0, 280),
         body,
+        html: htmlBodies.get(uid) || "",
         returnPath: rps.get(uid) || "",
         messageId: e.messageId || "",
       });
@@ -1179,8 +1215,7 @@ export function stripEmailQuotes(body: string): string {
  * quoted-printable, 7bit/8bit passthrough). Returns null when no text/plain
  * part is present, so callers can fall back to treating `raw` as plain text.
  */
-export function decodeMimeText(raw: string): string | null {
-  const lines = raw.split(/\r?\n/);
+export function decodeMimeText(raw: string): string | null {  const lines = raw.split(/\r?\n/);
   let i = lines.findIndex((l) => /^content-type:\s*text\/plain/i.test(l));
   if (i < 0) return null;
   let encoding = "", charset = "utf-8";
@@ -1214,6 +1249,47 @@ export function decodeMimeText(raw: string): string | null {
     text = Buffer.from(bytes).toString("utf-8");
   }
   return text;
+}
+
+/**
+ * Extract the first text/html MIME part from a raw message, decoded.
+ * Returns null when no HTML part is present. Mirrors decodeMimeText.
+ */
+export function decodeMimeHtml(raw: string): string | null {
+  const lines = raw.split(/\r?\n/);
+  let i = lines.findIndex((l) => /^content-type:\s*text\/html/i.test(l));
+  if (i < 0) return null;
+  let encoding = "", charset = "utf-8";
+  for (i++; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim()) { i++; break; } // blank line: part headers end, body begins
+    const em = l.match(/^content-transfer-encoding:\s*([^\s;]+)/i);
+    if (em) encoding = em[1].toLowerCase();
+    const cm = l.match(/^content-type:[^;]*;\s*charset="?([^"\s;]+)"?/i);
+    if (cm) charset = cm[1].toLowerCase();
+    if (/^content-type:/i.test(l)) return null; // ran into the next part: malformed
+  }
+  const bodyLines: string[] = [];
+  for (; i < lines.length; i++) {
+    if (/^--/.test(lines[i])) break; // MIME boundary
+    bodyLines.push(lines[i]);
+  }
+  let html = bodyLines.join("\n");
+  if (encoding === "base64") {
+    try {
+      html = Buffer.from(html.replace(/\s+/g, ""), "base64").toString(charset === "utf-8" || charset === "utf8" ? "utf-8" : "latin1");
+    } catch { /* keep the raw html */ }
+  } else if (encoding === "quoted-printable") {
+    const noSoft = (html + "\n").replace(/=\r?\n/g, "");
+    const bytes: number[] = [];
+    noSoft.replace(/=([0-9A-Fa-f]{2})|([\s\S])/g, (_m, hex: string, ch: string) => {
+      bytes.push(hex ? parseInt(hex, 16) : ch.charCodeAt(0) & 0xff);
+      return "";
+    });
+    html = Buffer.from(bytes).toString("utf-8");
+  }
+  html = html.trim();
+  return html ? html : null;
 }
 
 /** "New text message from Acela (513) 967-2841" -> "5139672841". */

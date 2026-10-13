@@ -190,6 +190,18 @@ button.chanpill { font-family: inherit; cursor: pointer; background: none; }
 .email-from .who span { font-size: 13px; color: var(--muted); }
 .email-date { font-size: 13px; color: var(--muted); }
 .email-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; word-wrap: break-word; padding: 14px 0; }
+/* rich HTML email rendering */
+.email-html {
+  width: 100%; min-height: 200px; border: 0; border-radius: 10px;
+  background: #fff; margin: 10px 0; display: block;
+}
+.email-viewtoggle { display: flex; gap: 6px; align-items: center; padding: 8px 0 0; }
+.email-viewtoggle button {
+  border: 1px solid var(--hairline, #ddd); background: none; border-radius: 14px;
+  padding: 5px 14px; font-size: 13px; cursor: pointer; color: var(--ink);
+}
+.email-viewtoggle button.on { background: var(--accent, #007aff); color: #fff; border-color: var(--accent, #007aff); }
+.email-viewtoggle button.dim { opacity: 0.7; margin-left: auto; }
 .email-actions { display: flex; gap: 20px; padding: 8px 0 20px; }
 .email-actions button { background: none; border: none; color: var(--accent); font-size: 16px; cursor: pointer; padding: 6px 0; }
 .email-actions button.dim { color: var(--muted); }

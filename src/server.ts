@@ -333,6 +333,13 @@ Bun.serve({
         setInboxRead(m[1], b.read !== false);
         return json({ ok: true });
       }
+      m = p.match(/^\/api\/inbox\/([\w-]+)\/html$/);
+      if (m && req.method === "GET") {
+        const r = getInbox(m[1]);
+        if (!r) return bad("not found", 404);
+        const { sanitizeEmailHtml } = await import("./sanitize");
+        return json({ html: sanitizeEmailHtml(r.html_body || "") });
+      }
       m = p.match(/^\/api\/nudges\/([\w-]+)\/dismiss$/);
       if (m && req.method === "POST") {
         const { recordNudgeFeedback } = await import("./jev");

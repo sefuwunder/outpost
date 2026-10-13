@@ -494,6 +494,8 @@ function openEmail(id) {
   const r = all.find((x) => x.id === id);
   if (!r) return;
   state.email = r;
+  state.emailHtml = "";
+  state.showImages = false;
   const name = senderName(r);
   if (!r.read) { api(`/api/inbox/${id}/read`, { method: "POST", body: JSON.stringify({ read: true }) }); r.read = 1; }
   $("email-body").innerHTML = `
@@ -504,12 +506,74 @@ function openEmail(id) {
       <button class="chanpill catbtn" id="email-cat">${esc(r.category)}</button>
       <div class="email-date">${fmtTime(r.at)}</div>
     </div>
-    <div class="email-text">${esc(r.body)}</div>
+    <div class="email-viewtoggle" id="email-viewtoggle" hidden>
+      <button id="email-view-rich" class="on">Rich</button><button id="email-view-text">Text</button>
+      <button id="email-show-images" class="dim" hidden>Show images</button>
+    </div>
+    <div class="email-text" id="email-text">${esc(r.body)}</div>
+    <iframe class="email-html" id="email-html" hidden sandbox="" title="Email content"></iframe>
     <div class="email-actions">
       ${r.contact_id ? `<button id="email-open-chat">Open chat</button>` : `<button id="email-add-contact">Add to Contacts</button>`}
       <button id="email-toggle-read" class="dim">${r.read ? "Mark unread" : "Mark read"}</button>
       <button id="email-delete" class="dim">Delete</button>
     </div>`;
+  // Try to load the rich HTML version; fall back to plain text silently.
+  (async () => {
+    try {
+      const { html } = await api(`/api/inbox/${id}/html`);
+      if (!html || !html.trim()) return;
+      state.emailHtml = html;
+      $("email-viewtoggle").hidden = false;
+      showEmailHtml(false);
+      $("email-view-rich").addEventListener("click", () => showEmailHtml(state.showImages));
+      $("email-view-text").addEventListener("click", showEmailText);
+      $("email-show-images").addEventListener("click", () => {
+        state.showImages = true;
+        showEmailHtml(true);
+      });
+    } catch { /* plain text remains */ }
+  })();
+
+function showEmailText() {
+  $("email-text").hidden = false;
+  $("email-html").hidden = true;
+  $("email-view-rich")?.classList.remove("on");
+  $("email-view-text")?.classList.add("on");
+  $("email-show-images").hidden = true;
+}
+
+function showEmailHtml(withImages) {
+  let html = state.emailHtml || "";
+  let blocked = 0;
+  if (!withImages) {
+    // Block remote images (tracking pixels); keep data:/cid: embeds.
+    html = html.replace(/<img\b[^>]*>/gi, (tag) => {
+      const srcM = tag.match(/\ssrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
+      const raw = srcM ? srcM[1].replace(/^["']|["']$/g, "") : "";
+      if (/^(data:image\/|cid:)/i.test(raw.trim())) return tag;
+      const altM = tag.match(/\salt\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
+      const alt = altM ? altM[1].replace(/^["']|["']$/g, "").replace(/</g, "&lt;") : "image";
+      return `<span style="display:inline-block;border:1px dashed #999;border-radius:6px;padding:4px 8px;font-size:12px;color:#666">🖼 ${alt}</span>`;
+    });
+  }
+  const doc = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,system-ui,sans-serif;font-size:15px;line-height:1.5;color:#1a1a1a;max-width:100%;overflow-wrap:break-word;padding:8px;margin:0}img{max-width:100%;height:auto}a{color:#0066cc}</style></head><body>${html}</body></html>`;
+  const frame = $("email-html");
+  frame.hidden = false;
+  $("email-text").hidden = true;
+  frame.srcdoc = doc;
+  // Auto-size the iframe to its content.
+  frame.onload = () => {
+    try {
+      const h = frame.contentDocument?.body?.scrollHeight;
+      if (h) frame.style.height = Math.min(h + 20, 2000) + "px";
+    } catch { /* sandboxed — keep default height */ }
+  };
+  $("email-view-rich")?.classList.add("on");
+  $("email-view-text")?.classList.remove("on");
+  const btn = $("email-show-images");
+  btn.hidden = blocked === 0 && withImages;
+  btn.textContent = blocked ? `Show images (${blocked} blocked)` : "Show images";
+}
   $("email-add-contact")?.addEventListener("click", () => {
     openContactForm(null);
     $("f-name").value = r.from_name || "";

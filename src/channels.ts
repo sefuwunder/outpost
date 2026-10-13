@@ -144,7 +144,7 @@ export function ingestEmail(m: UnseenMail, report: PollReport): void {
     if (added) {
       upsertInbox({
         from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
-        body: m.body || m.snippet, at, external_id: extId,
+        body: m.body || m.snippet, html_body: m.html || "", at, external_id: extId,
         contact_id: c.id, message_id: added.id,
       });
       report.email++;
@@ -152,7 +152,7 @@ export function ingestEmail(m: UnseenMail, report: PollReport): void {
   } else {
     upsertInbox({
       from_email: addr, from_name: extractName(m.from || ""), subject: m.subject || "",
-      body: m.body || m.snippet, at, external_id: extId,
+      body: m.body || m.snippet, html_body: m.html || "", at, external_id: extId,
     });
     upsertUnknown("email", addr, "", m.body || m.snippet, at);
     report.unknown++;
