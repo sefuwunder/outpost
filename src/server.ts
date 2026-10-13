@@ -90,12 +90,12 @@ Bun.serve({
       if (p === "/api/reply-later" && req.method === "GET") {
         return json({ items: listReplyLater() });
       }
-      m = p.match(/^\/api\/messages\/([\w-]+)\/reply-later$/);
-      if (m && req.method === "POST") {
+      const rl = p.match(/^\/api\/messages\/([\w-]+)\/reply-later$/);
+      if (rl && req.method === "POST") {
         const b = await req.json().catch(() => ({})) as { on?: boolean };
-        const msg = getDb().query("SELECT id FROM messages WHERE id = ?").get(m[1]) as any;
+        const msg = getDb().query("SELECT id FROM messages WHERE id = ?").get(rl[1]) as any;
         if (!msg) return bad("not found", 404);
-        setReplyLater(m[1], b.on !== false);
+        setReplyLater(rl[1], b.on !== false);
         return json({ ok: true, on: b.on !== false });
       }
       if (p === "/api/conversations" && req.method === "DELETE") {
