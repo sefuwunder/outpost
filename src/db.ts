@@ -21,6 +21,8 @@ export interface Message {
   id: string; conversation_id: string; channel: Channel; direction: "in" | "out";
   body: string; subject: string; external_id: string; created_at: string; read: number;
   reply_later: number;
+  /** GOA account id this arrived on / was sent from ("" when unknown). */
+  via: string;
 }
 export interface UnknownSender {
   id: string; channel: Channel; handle: string; name: string;
@@ -134,6 +136,11 @@ export function openDb(path?: string): Database {
   if (!msgCols.some((c) => c.name === "reply_later")) {
     db.exec("ALTER TABLE messages ADD COLUMN reply_later INTEGER NOT NULL DEFAULT 0");
   }
+  // Migration: messages.via — which GOA account a message arrived on / was sent
+  // from (multi-account reply routing). Empty for old rows and non-GOA channels.
+  if (!msgCols.some((c) => c.name === "via")) {
+    db.exec("ALTER TABLE messages ADD COLUMN via TEXT NOT NULL DEFAULT ''");
+  }
   // Migration: inbox.html_body (older DBs lack the column).
   const inboxCols = db.query("PRAGMA table_info(inbox)").all() as { name: string }[];
   if (!inboxCols.some((c) => c.name === "html_body")) {
@@ -224,11 +231,11 @@ export function setSetting(key: string, value: string): void {
 }
 export function publicSettings(): Record<string, boolean> {
   // booleans only — secrets never leave the server
+  const goaReady = getSetting("email_provider") === "goa" &&
+    (!!getSetting("goa_accounts") || !!getSetting("goa_account"));
   return {
-    email_configured: !!((getSetting("imap_host") && getSetting("imap_user")) ||
-      (getSetting("email_provider") === "goa" && getSetting("goa_account"))),
-    sms_configured: !!((getSetting("smtp_host") && getSetting("imap_host")) ||
-      (getSetting("email_provider") === "goa" && getSetting("goa_account"))),
+    email_configured: !!((getSetting("imap_host") && getSetting("imap_user")) || goaReady),
+    sms_configured: !!((getSetting("smtp_host") && getSetting("imap_host")) || goaReady),
     matrix_configured: !!(getSetting("matrix_homeserver") && getSetting("matrix_token")),
     e2ee_configured: !!((getSetting("e2ee_url") || getSetting("e2ee_token")) && getSetting("e2ee_handle")),
     llm_configured: getSetting("llm_enabled") === "1",
@@ -407,6 +414,7 @@ export function markRead(conversationId: string): void {
 export function addMessage(m: {
   conversation_id: string; channel: Channel; direction: "in" | "out";
   body: string; subject?: string; external_id?: string; created_at?: string;
+  via?: string;
 }): Message | null {
   const ext = m.external_id || "";
   if (ext) {
@@ -417,10 +425,11 @@ export function addMessage(m: {
     id: uid(), conversation_id: m.conversation_id, channel: m.channel, direction: m.direction,
     body: m.body, subject: m.subject || "", external_id: ext,
     created_at: m.created_at || nowIso(), read: m.direction === "out" ? 1 : 0,
+    via: m.via || "",
   };
   getDb().query(
-    "INSERT INTO messages(id, conversation_id, channel, direction, body, subject, external_id, created_at, read) VALUES(?,?,?,?,?,?,?,?,?)"
-  ).run(row.id, row.conversation_id, row.channel, row.direction, row.body, row.subject, row.external_id, row.created_at, row.read);
+    "INSERT INTO messages(id, conversation_id, channel, direction, body, subject, external_id, created_at, read, via) VALUES(?,?,?,?,?,?,?,?,?,?)"
+  ).run(row.id, row.conversation_id, row.channel, row.direction, row.body, row.subject, row.external_id, row.created_at, row.read, row.via);
   getDb().query("UPDATE conversations SET last_at = ? WHERE id = ?").run(row.created_at, row.conversation_id);
   return row;
 }

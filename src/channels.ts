@@ -4,7 +4,7 @@
 import {
   getContact, conversationFor, addMessage, findContactByEmail, findContactByPhone,
   findContactByMatrixId, findContactByE2EE, upsertUnknown, upsertInbox, getSetting, setSetting,
-  getE2EEState, setE2EEState, delE2EEState,
+  getE2EEState, setE2EEState, delE2EEState, getDb,
   type Channel, type Contact,
 } from "./db";
 import { extractEmail, gvNumberFrom, stripGvFooter, type UnseenMail, type ImapConfig, type SentMailItem } from "./imap";
@@ -12,8 +12,9 @@ import type { SmtpConfig } from "./smtp";
 import type { RunFn } from "./goa";
 
 export interface Transports {
-  /** Sends an email; resolves with the wire Message-ID (for Sent dedupe). */
-  sendEmail(to: string, subject: string, text: string): Promise<{ messageId: string }>;
+  /** Sends an email; resolves with the wire Message-ID (for Sent dedupe).
+   *  fromAccountId selects the GOA account (multi-account); defaults to send-from. */
+  sendEmail(to: string, subject: string, text: string, fromAccountId?: string): Promise<{ messageId: string }>;
   sendSms(digits: string, text: string): Promise<void>;
   sendMatrix(contact: Contact, text: string): Promise<void>;
   sendEncrypted(handle: string, text: string): Promise<void>;
@@ -90,13 +91,16 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
   try {
     if (channel === "email") {
       if (!c.email) return { ok: false, error: "no email address" };
-      const { messageId } = await t.sendEmail(c.email, "", text);
+      // Multi-account: reply from the account that received the latest inbound
+      // email in this thread, so the From matches what the contact wrote to.
+      const fromAccountId = emailProvider() === "goa" ? replyFromAccount(c.id) : undefined;
+      const { messageId } = await t.sendEmail(c.email, "", text, fromAccountId);
       const conv = conversationFor(c.id);
       // File under the wire Message-ID so the Sent-folder import dedupes
       // against this record instead of showing the message twice.
       const m = addMessage({
         conversation_id: conv.id, channel, direction: "out", body: text,
-        external_id: `email:${messageId}`, subject: "",
+        external_id: `email:${messageId}`, subject: "", via: fromAccountId || "",
       });
       return { ok: true, messageId: m!.id };
     } else if (channel === "sms") {
@@ -119,6 +123,23 @@ export async function sendToContact(t: Transports, contactId: string, channel: C
 
 export interface PollReport { email: number; sms: number; matrix: number; encrypted: number; unknown: number }
 
+/**
+ * Which GOA account to reply from for a contact: the account that received
+ * the latest inbound email in their thread. Falls back to the configured
+ * send-from default (first account).
+ */
+export function replyFromAccount(contactId: string): string | undefined {
+  try {
+    const conv = conversationFor(contactId);
+    const row = getDb().query(
+      `SELECT via FROM messages WHERE conversation_id = ? AND channel = 'email'
+       AND direction = 'in' AND via != '' ORDER BY created_at DESC LIMIT 1`
+    ).get(conv.id) as { via: string } | null;
+    if (row?.via && goaAccountIds().includes(row.via)) return row.via;
+  } catch { /* fall through to default */ }
+  return goaSendFromId() || undefined;
+}
+
 /** Ingest one inbound email: inbox row always, contact thread when known. */
 export function ingestEmail(m: UnseenMail, report: PollReport): void {
   const addr = extractEmail(m.from || "");
@@ -139,7 +160,7 @@ export function ingestEmail(m: UnseenMail, report: PollReport): void {
       conversation_id: conv.id, channel: "email", direction: "in",
       body: m.body || m.snippet, subject: m.subject || "",
       external_id: extId || `email:${m.uid || Date.now()}@${addr}`,
-      created_at: at,
+      created_at: at, via: m.viaAccount || "",
     });
     if (added) {
       upsertInbox({
@@ -183,7 +204,7 @@ function ingestGvSms(m: UnseenMail, digits: string, at: string, report: PollRepo
  * client) sent. Dedupes against the local outbox record via Message-ID, so
  * a message sent from outpost appears once, not twice.
  */
-export function ingestSentEmail(m: SentMailItem, report: PollReport): void {
+export function ingestSentEmail(m: SentMailItem, report: PollReport, viaAccount = ""): void {
   const extId = m.messageId ? `email:${m.messageId}` : `email:sent-uid-${m.uid}`;
   const toAddr = (m.to || []).map((a) => a.toLowerCase().trim()).find((a) => a.includes("@")) || "";
   if (!toAddr) return;
@@ -194,6 +215,7 @@ export function ingestSentEmail(m: SentMailItem, report: PollReport): void {
     conversation_id: conv.id, channel: "email", direction: "out",
     body: m.body || "", subject: m.subject || "",
     external_id: extId, created_at: m.dateTime || m.date || new Date().toISOString(),
+    via: viaAccount,
   });
   if (added) report.email++;
 }
@@ -205,6 +227,19 @@ export async function backfillInbox(days = 30, limit = 500, secure = true): Prom
   if (!emailReady())
     throw new Error("email not configured — add it in ⚙️ Channels first");
   const report: PollReport = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
+  if (emailProvider() === "goa") {
+    // Multi-account: backfill each configured account, tagged for reply routing.
+    const resolved = await goaAccountsOrThrow().catch(() => [] as GoaResolved[]);
+    for (const r of resolved) {
+      try {
+        const cfg = { ...goaResolvedImapConfig(r), secure };
+        for (const m of await imap.fetchRecent(cfg, days, limit, "INBOX")) {
+          ingestEmail({ ...m, viaAccount: r.acct.id }, report);
+        }
+      } catch { /* account down — next time */ }
+    }
+    return report;
+  }
   const cfg = { ...(await emailImapConfig()), secure };
   for (const m of await imap.fetchRecent(cfg, days, limit, "INBOX")) ingestEmail(m, report);
   return report;
@@ -219,10 +254,24 @@ export function emailProvider(): "manual" | "goa" {
  * True when the provider saves SMTP-sent mail to Sent itself (Geary sets
  * save_sent=false for these): Gmail and Outlook/Office365 both do. For every
  * other provider outpost APPENDs the sent message to Sent itself.
+ * Pass the GOA account id being sent from; defaults to the cached/first type.
  */
-export function providerAutoSavesSent(): boolean {
+export function providerAutoSavesSent(accountId?: string | null): boolean {
   if (emailProvider() === "goa") {
-    const pt = (getSetting("goa_provider_type") || "").toLowerCase();
+    let pt = "";
+    if (accountId) {
+      // Best-effort: resolve the account's provider type without credentials.
+      try {
+        const ids = goaAccountIds();
+        if (ids.includes(accountId)) {
+          // The type was cached at resolve time per send; fall back to settings.
+          pt = getSetting(`goa_provider_type:${accountId}`) || getSetting("goa_provider_type") || "";
+        }
+      } catch { /* fall through */ }
+    } else {
+      pt = getSetting("goa_provider_type") || "";
+    }
+    pt = pt.toLowerCase();
     return pt === "google" || pt === "windows_live" || pt.includes("outlook") || pt.includes("microsoft");
   }
   const hosts = `${getSetting("imap_host") || ""} ${getSetting("smtp_host") || ""}`.toLowerCase();
@@ -231,26 +280,104 @@ export function providerAutoSavesSent(): boolean {
 
 /** True when the email channel can be used. */
 export function emailReady(): boolean {
-  if (emailProvider() === "goa") return !!getSetting("goa_account");
+  if (emailProvider() === "goa") return goaAccountIds().length > 0;
   return !!(getSetting("imap_host") && getSetting("imap_user"));
 }
 
-async function goaAccountOrThrow(run?: RunFn) {
-  const goa = await import("./goa");
-  const id = getSetting("goa_account");
-  if (!id) throw new Error("GNOME Online Accounts selected but no account chosen — pick one in ⚙️ Channels");
-  const accts = await goa.listGoaMailAccounts(run);
-  const acct = accts.find((a) => a.id === id);
-  if (!acct) throw new Error(`GNOME account "${id}" is gone — is it still enabled for Mail?`);
-  // Cache for providerAutoSavesSent() (Gmail/Outlook auto-save sent mail).
-  try { setSetting("goa_provider_type", acct.providerType || ""); } catch { /* non-fatal */ }
-  return { acct, creds: await goa.getGoaCredentials(acct, run), goa };
+/**
+ * Configured GOA account ids. Canonical store is `goa_accounts` (JSON array);
+ * a legacy single `goa_account` is migrated on first read.
+ */
+export function goaAccountIds(): string[] {
+  const raw = getSetting("goa_accounts");
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr.filter((x) => typeof x === "string" && x);
+    } catch { /* fall through to migration */ }
+  }
+  const legacy = getSetting("goa_account");
+  if (legacy) {
+    try { setSetting("goa_accounts", JSON.stringify([legacy])); } catch { /* non-fatal */ }
+    try { setSetting("goa_account", ""); } catch { /* non-fatal */ }
+    return [legacy];
+  }
+  return [];
 }
 
-/** IMAP config from the active email provider (manual settings or GOA). */
-export async function emailImapConfig(run?: RunFn): Promise<ImapConfig> {
+/** Default account for sending (explicit choice, else the first configured). */
+export function goaSendFromId(): string | null {
+  const ids = goaAccountIds();
+  if (!ids.length) return null;
+  const explicit = getSetting("goa_send_from");
+  if (explicit && ids.includes(explicit)) return explicit;
+  return ids[0];
+}
+
+export interface GoaResolved { acct: import("./goa").GoaMailAccount; creds: import("./goa").GoaCredentials; goa: typeof import("./goa"); }
+
+/** Resolve every configured GOA account to live credentials. Throws when none are usable. */
+export async function goaAccountsOrThrow(run?: RunFn): Promise<GoaResolved[]> {
+  const goa = await import("./goa");
+  const ids = goaAccountIds();
+  if (!ids.length) throw new Error("GNOME Online Accounts selected but no accounts chosen — pick them in ⚙️ Channels");
+  const available = await goa.listGoaMailAccounts(run);
+  const out: GoaResolved[] = [];
+  const missing: string[] = [];
+  for (const id of ids) {
+    const acct = available.find((a) => a.id === id);
+    if (!acct) { missing.push(id); continue; }
+    out.push({ acct, creds: await goa.getGoaCredentials(acct, run), goa });
+  }
+  if (!out.length) {
+    throw new Error(`None of the configured GNOME accounts are available (${missing.join(", ") || "none configured"}) — are they still enabled for Mail?`);
+  }
+  // Cache provider types for providerAutoSavesSent() (Gmail/Outlook auto-save sent mail).
+  for (const r of out) {
+    try { setSetting(`goa_provider_type:${r.acct.id}`, r.acct.providerType || ""); } catch { /* non-fatal */ }
+  }
+  try { setSetting("goa_provider_type", out[0].acct.providerType || ""); } catch { /* non-fatal */ }
+  return out;
+}
+
+/** Resolve one GOA account by id (defaults to the send-from account). */
+export async function goaAccountOrThrow(accountId?: string | null, run?: RunFn): Promise<GoaResolved> {
+  const all = await goaAccountsOrThrow(run);
+  const want = accountId || goaSendFromId();
+  const hit = all.find((r) => r.acct.id === want);
+  if (hit) return hit;
+  // Requested id vanished mid-flight — fall back to the first working one.
+  return all[0];
+}
+
+/** IMAP config for an already-resolved GOA account (no re-resolution). */
+export function goaResolvedImapConfig(r: GoaResolved): ImapConfig {
+  const c = r.goa.goaImapCfg(r.acct);
+  return {
+    host: c.host, port: c.port, user: r.creds.user,
+    pass: r.creds.imapPassword || "",
+    xoauth2Token: r.creds.oauth2 ? r.creds.token : undefined,
+    secure: c.secure,
+  };
+}
+
+/** SMTP config for an already-resolved GOA account (no re-resolution). */
+export function goaResolvedSmtpConfig(r: GoaResolved): SmtpConfig {
+  const c = r.goa.goaSmtpCfg(r.acct);
+  return {
+    host: c.host, port: c.port, user: r.creds.user,
+    pass: r.creds.smtpPassword || "",
+    xoauth2Token: r.creds.oauth2 ? r.creds.token : undefined,
+    from: r.acct.email, secure: c.secure,
+  };
+}
+
+/** IMAP config from the active email provider (manual settings or GOA).
+ *  First arg is a GOA account id, or a RunFn for tests (legacy position). */
+export async function emailImapConfig(accountId?: string | null | RunFn, run?: RunFn): Promise<ImapConfig> {
+  if (typeof accountId === "function") { run = accountId; accountId = null; }
   if (emailProvider() === "goa") {
-    const { acct, creds, goa } = await goaAccountOrThrow(run);
+    const { acct, creds, goa } = await goaAccountOrThrow(accountId, run);
     const c = goa.goaImapCfg(acct);
     return {
       host: c.host, port: c.port, user: creds.user,
@@ -265,11 +392,13 @@ export async function emailImapConfig(run?: RunFn): Promise<ImapConfig> {
   };
 }
 
-/** SMTP config from the active email provider (manual settings or GOA). */
-export async function emailSmtpConfig(run?: RunFn): Promise<SmtpConfig> {
+/** SMTP config from the active email provider (manual settings or GOA).
+ *  First arg is a GOA account id, or a RunFn for tests (legacy position). */
+export async function emailSmtpConfig(accountId?: string | null | RunFn, run?: RunFn): Promise<SmtpConfig> {
   const smtp = require("./smtp") as typeof import("./smtp");
+  if (typeof accountId === "function") { run = accountId; accountId = null; }
   if (emailProvider() === "goa") {
-    const { acct, creds, goa } = await goaAccountOrThrow(run);
+    const { acct, creds, goa } = await goaAccountOrThrow(accountId, run);
     const c = goa.goaSmtpCfg(acct);
     return {
       host: c.host, port: c.port, user: creds.user,
@@ -296,17 +425,34 @@ export async function pollInbox(t: Transports): Promise<PollReport> {
     for (const m of await t.fetchEmail()) ingestEmail(m, report);
   } catch { /* channel down — next sweep */ }
 
-  // --- sent mail: new items in the Sent folder (UID watermark in settings).
+  // --- sent mail: new items in the Sent folder (per-account UID watermark).
   // This is the other half of outbox sync: mail sent from outpost is APPENDed
   // to Sent at send time, and mail sent from other clients (phone/webmail)
   // shows up here. Dedupes against local outbox records by Message-ID. ---
   try {
     if (emailReady()) {
       const imap = require("./imap") as typeof import("./imap");
-      const lastUid = Number(getSetting("sent_last_uid") || 0) || null;
-      const { items, maxUid } = await imap.fetchSentMail(await emailImapConfig(), lastUid, { backfillDays: 90, max: 200 });
-      for (const it of items) ingestSentEmail(it, report);
-      if (maxUid !== null && Number.isFinite(maxUid)) setSetting("sent_last_uid", String(maxUid));
+      // One config per account: manual → single; GOA → every configured account.
+      const cfgs: Array<{ cfg: ImapConfig; wmKey: string; accountId: string }> = [];
+      if (emailProvider() === "goa") {
+        const resolved = await goaAccountsOrThrow().catch(() => [] as GoaResolved[]);
+        for (const r of resolved) {
+          cfgs.push({ cfg: goaResolvedImapConfig(r), wmKey: `sent_last_uid:${r.acct.id}`, accountId: r.acct.id });
+        }
+      } else {
+        cfgs.push({ cfg: await emailImapConfig(), wmKey: "sent_last_uid", accountId: "" });
+      }
+      for (const { cfg, wmKey, accountId } of cfgs) {
+        try {
+          // Legacy single-account watermark migrates forward automatically:
+          // the first per-account run picks up where the old global one left off.
+          const legacy = wmKey !== "sent_last_uid" ? Number(getSetting("sent_last_uid") || 0) : 0;
+          const lastUid = Number(getSetting(wmKey) || legacy || 0) || null;
+          const { items, maxUid } = await imap.fetchSentMail(cfg, lastUid, { backfillDays: 90, max: 200 });
+          for (const it of items) ingestSentEmail(it, report, accountId);
+          if (maxUid !== null && Number.isFinite(maxUid)) setSetting(wmKey, String(maxUid));
+        } catch { /* account down — next sweep */ }
+      }
     }
   } catch { /* channel down — next sweep */ }
 
@@ -400,8 +546,8 @@ export function realTransports(): Transports {
   });
 
   return {
-    sendEmail: async (to, subject, text) => {
-      const smtpCfg = await emailSmtpConfig();
+    sendEmail: async (to, subject, text, fromAccountId?: string) => {
+      const smtpCfg = await emailSmtpConfig(fromAccountId);
       const messageId = smtp.newMessageId();
       // Build once: the byte-identical message goes over SMTP and (below)
       // into the Sent folder, like Geary's save_sent_mail.
@@ -411,9 +557,9 @@ export function realTransports(): Transports {
       // auto-save SMTP mail would otherwise never show it. Best-effort:
       // the local outbox record already exists, so a failed APPEND only
       // delays the server-side copy until the next successful send.
-      if (!providerAutoSavesSent()) {
+      if (!providerAutoSavesSent(fromAccountId)) {
         try {
-          await imap.appendToSent(await emailImapConfig(), raw);
+          await imap.appendToSent(await emailImapConfig(fromAccountId), raw);
         } catch (e: any) {
           console.warn(`[outpost] Sent APPEND failed (best-effort): ${e?.message || e}`);
         }
@@ -435,7 +581,20 @@ export function realTransports(): Transports {
     },
     fetchEmail: async () => {
       if (!emailReady()) return [];
-      return imap.fetchUnseen(await emailImapConfig(), 50, "INBOX", 4000);
+      if (emailProvider() !== "goa") {
+        return imap.fetchUnseen(await emailImapConfig(), 50, "INBOX", 4000);
+      }
+      // Multi-account: UNSEEN from every configured GOA account, each tagged
+      // with the account it arrived on (for reply routing).
+      const resolved = await goaAccountsOrThrow().catch(() => [] as GoaResolved[]);
+      const out: UnseenMail[] = [];
+      for (const r of resolved) {
+        try {
+          const msgs = await imap.fetchUnseen(goaResolvedImapConfig(r), 50, "INBOX", 4000);
+          for (const m of msgs) out.push({ ...m, viaAccount: r.acct.id });
+        } catch { /* account down — next sweep */ }
+      }
+      return out;
     },
     fetchSms: async () => {
       if (!emailReady()) return [];

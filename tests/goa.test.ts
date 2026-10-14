@@ -255,14 +255,14 @@ test("emailImapConfig falls back to manual settings by default", async () => {
 test("GOA provider with no account chosen is not ready", async () => {
   db.setSetting("email_provider", "goa");
   expect(ch.emailReady()).toBe(false);
-  await expect(ch.emailImapConfig()).rejects.toThrow(/no account chosen/);
+  await expect(ch.emailImapConfig()).rejects.toThrow(/no accounts chosen/);
 });
 
 test("GOA provider with unknown account id fails clearly", async () => {
   const run = fakeRun([]);
   db.setSetting("email_provider", "goa");
   db.setSetting("goa_account", "goa_account_9999");
-  await expect(ch.emailImapConfig(run)).rejects.toThrow(/is gone/);
+  await expect(ch.emailImapConfig(run)).rejects.toThrow(/not available|none of the configured/i);
 });
 
 // ---------- XOAUTH2 against fake servers ----------
@@ -350,4 +350,109 @@ test("SMTP AUTH XOAUTH2 succeeds with a valid token", async () => {
     expect(cmds.some((c) => c.toUpperCase().startsWith("AUTH XOAUTH2"))).toBe(true);
     expect(cmds.some((c) => c.toUpperCase() === "AUTH LOGIN")).toBe(false);
   } finally { server.stop(); }
+});
+
+// ---------- multi-account GOA ----------
+
+test("goaAccountIds reads the JSON array and migrates the legacy single key", () => {
+  // Empty → none.
+  expect(ch.goaAccountIds()).toEqual([]);
+  // Legacy single key migrates on first read.
+  db.setSetting("goa_account", "goa_account_1001");
+  expect(ch.goaAccountIds()).toEqual(["goa_account_1001"]);
+  expect(db.getSetting("goa_accounts")).toBe(JSON.stringify(["goa_account_1001"]));
+  expect(db.getSetting("goa_account")).toBe("");
+  // Canonical array wins over any legacy residue.
+  db.setSetting("goa_account", "goa_account_9999");
+  expect(ch.goaAccountIds()).toEqual(["goa_account_1001"]);
+  // Multiple ids.
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002"]));
+  expect(ch.goaAccountIds()).toEqual(["goa_account_1001", "goa_account_1002"]);
+});
+
+test("goaSendFromId defaults to first, honors explicit choice", () => {
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002"]));
+  expect(ch.goaSendFromId()).toBe("goa_account_1001");
+  db.setSetting("goa_send_from", "goa_account_1002");
+  expect(ch.goaSendFromId()).toBe("goa_account_1002");
+  // Explicit choice for an unconfigured id falls back to first.
+  db.setSetting("goa_send_from", "goa_account_9999");
+  expect(ch.goaSendFromId()).toBe("goa_account_1001");
+  expect(ch.goaSendFromId()).not.toBeNull();
+});
+
+test("goaAccountsOrThrow resolves every configured account", async () => {
+  const run = fakeRun([]);
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002", "goa_account_1005"]));
+  const all = await ch.goaAccountsOrThrow(run);
+  expect(all.length).toBe(3);
+  expect(all.map((r) => r.acct.email).sort()).toEqual(["ada@gmail.com", "bob@example.com", "erin@gmail.com"]);
+  // Per-account provider types cached for the Sent APPEND decision.
+  expect(db.getSetting("goa_provider_type:goa_account_1001")).toBe("google");
+});
+
+test("goaAccountsOrThrow skips vanished accounts, throws when none remain", async () => {
+  const run = fakeRun([]);
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_9999"]));
+  const all = await ch.goaAccountsOrThrow(run);
+  expect(all.length).toBe(1);
+  expect(all[0].acct.id).toBe("goa_account_1001");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_9999"]));
+  await expect(ch.goaAccountsOrThrow(run)).rejects.toThrow(/none of the configured/i);
+});
+
+test("emailImapConfig accepts an explicit account id", async () => {
+  const run = fakeRun([]);
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002"]));
+  const ic = await ch.emailImapConfig("goa_account_1002", run);
+  expect(ic.host).toBe("imap.example.com");
+  expect(ic.user).toBe("bob@example.com");
+  expect(ic.pass).toBe("pw-for-imap-password");
+  const sc = await ch.emailSmtpConfig("goa_account_1002", run);
+  expect(sc.from).toBe("bob@example.com");
+});
+
+test("replyFromAccount follows the thread's latest inbound account", async () => {
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002"]));
+  const c = db.createContact({ name: "Zed", email: "zed@example.com" });
+  const conv = db.conversationFor(c.id);
+  // Inbound arrived on the second account → reply from the second.
+  db.addMessage({ conversation_id: conv.id, channel: "email", direction: "in", body: "hi", via: "goa_account_1002" });
+  expect(ch.replyFromAccount(c.id)).toBe("goa_account_1002");
+  // No inbound → default send-from (first).
+  const c2 = db.createContact({ name: "Yan", email: "yan@example.com" });
+  expect(ch.replyFromAccount(c2.id)).toBe("goa_account_1001");
+  // Explicit send-from wins the default.
+  db.setSetting("goa_send_from", "goa_account_1002");
+  expect(ch.replyFromAccount(c2.id)).toBe("goa_account_1002");
+  // But the thread's account still wins over the default.
+  expect(ch.replyFromAccount(c.id)).toBe("goa_account_1002");
+});
+
+test("providerAutoSavesSent is per-account for GOA", () => {
+  db.setSetting("email_provider", "goa");
+  db.setSetting("goa_accounts", JSON.stringify(["goa_account_1001", "goa_account_1002"]));
+  db.setSetting("goa_provider_type:goa_account_1001", "google");
+  db.setSetting("goa_provider_type:goa_account_1002", "imap_smtp");
+  expect(ch.providerAutoSavesSent("goa_account_1001")).toBe(true);
+  expect(ch.providerAutoSavesSent("goa_account_1002")).toBe(false);
+});
+
+test("ingestEmail tags messages with the receiving account", () => {
+  const report = { email: 0, sms: 0, matrix: 0, encrypted: 0, unknown: 0 };
+  const c = db.createContact({ name: "Zoe", email: "zoe@example.com" });
+  ch.ingestEmail({
+    uid: "u1", from: "Zoe <zoe@example.com>", to: [], subject: "hey",
+    date: "", dateTime: "2026-10-14T00:00:00Z", snippet: "hi", body: "hi",
+    returnPath: "", messageId: "mid-1", viaAccount: "goa_account_1005",
+  }, report);
+  const conv = db.conversationFor(c.id);
+  const msgs = db.listMessages(conv.id);
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].via).toBe("goa_account_1005");
+  expect(report.email).toBe(1);
 });

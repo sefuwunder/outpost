@@ -735,7 +735,7 @@ $("btn-settings").addEventListener("click", async () => {
   $("s-llm_enabled").checked = s.values["llm_enabled"] === "1";
   $("s-smtp_secure").value = s.values["smtp_secure"] || "";
   $("s-email_provider").value = s.values["email_provider"] || "manual";
-  await loadGoaAccounts(s.values["goa_account"] || "");
+  await loadGoaAccounts(s.values["goa_accounts"] || "[]", s.values["goa_send_from"] || "");
   $("s-imap_pass").value = ""; $("s-smtp_pass").value = ""; $("s-matrix_token").value = ""; $("s-e2ee_token").value = "";
   for (const [k, v] of [["email", s.email_configured], ["sms", s.sms_configured], ["matrix", s.matrix_configured], ["e2ee", s.e2ee_configured], ["llm", s.llm_configured]]) {
     const el = $("cfg-" + k);
@@ -766,8 +766,12 @@ async function renderRulesList() {
 $("btn-settings-back").addEventListener("click", () => { show("list"); refresh(); });
 $("btn-save-settings").addEventListener("click", async () => {
   const payload = {};
-  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "email_provider", "goa_account", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
+  for (const k of ["imap_host", "imap_port", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_pass", "smtp_from", "email_provider", "matrix_homeserver", "matrix_token", "e2ee_url", "e2ee_handle", "e2ee_token", "llm_url", "llm_model", "llm_threshold", "llm_timeout"])
     payload[k] = $("s-" + k).value;
+  // Multi-account GOA: checked boxes → JSON array; send-from select as-is.
+  payload["goa_accounts"] = JSON.stringify(
+    [...document.querySelectorAll('#goa-accounts input[type="checkbox"]:checked')].map((c) => c.value));
+  payload["goa_send_from"] = $("s-goa_send_from").value || "";
   payload["llm_enabled"] = $("s-llm_enabled").checked ? "1" : "0";
   for (const k of ["imap_pass", "smtp_pass", "matrix_token", "e2ee_token"]) if (!payload[k]) delete payload[k];
   await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
@@ -782,32 +786,54 @@ $("s-email_provider").addEventListener("change", () => {
   updateMailProviderUI();
   // (Re)load the account list when switching to GOA — otherwise the picker
   // keeps whatever the settings page happened to fetch on open (or nothing).
-  if ($("s-email_provider").value === "goa") loadGoaAccounts($("s-goa_account").value || "");
+  if ($("s-email_provider").value === "goa") loadGoaAccounts();
 });
 
-async function loadGoaAccounts(selected) {
+async function loadGoaAccounts(savedJson, savedSendFrom) {
   updateMailProviderUI();
-  const sel = $("s-goa_account");
+  const box = $("goa-accounts");
   const note = $("goa-note");
+  const sendSel = $("s-goa_send_from");
   $("btn-goa-test").disabled = true;
+  let selected = [];
+  try { selected = JSON.parse(savedJson || "[]"); } catch { selected = []; }
+  if (!Array.isArray(selected)) selected = [];
+  // When re-loading (provider switch), keep the current checkbox state.
+  if (savedJson === undefined) {
+    selected = [...box.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value);
+    savedSendFrom = sendSel.value;
+  }
+  const renderSendFrom = (accounts) => {
+    const cur = savedSendFrom || "";
+    sendSel.innerHTML = `<option value="">First selected</option>` + accounts
+      .filter((a) => selected.includes(a.id))
+      .map((a) => `<option value="${esc(a.id)}"${a.id === cur ? " selected" : ""}>${esc(a.email)}</option>`).join("");
+  };
   try {
     const r = await api("/api/goa/accounts");
     if (!r.available) {
-      sel.innerHTML = `<option value="">Not available</option>`;
+      box.innerHTML = `<p class="sectnote">Not available</p>`;
       note.textContent = "GNOME Online Accounts isn't reachable (no GNOME session or goa-daemon not running).";
       return;
     }
     if (!r.accounts.length) {
-      sel.innerHTML = `<option value="">No mail accounts</option>`;
+      box.innerHTML = `<p class="sectnote">No mail accounts</p>`;
       note.textContent = "No GNOME accounts with Mail enabled. Add one in GNOME Settings → Online Accounts.";
       return;
     }
-    sel.innerHTML = r.accounts.map((a) =>
-      `<option value="${esc(a.id)}"${a.id === selected ? " selected" : ""}>${esc(a.email)} (${esc(a.providerName)})</option>`).join("");
+    box.innerHTML = r.accounts.map((a) =>
+      `<label class="goa-check"><input type="checkbox" value="${esc(a.id)}"${selected.includes(a.id) ? " checked" : ""}>` +
+      `<span>${esc(a.email)} <em>(${esc(a.providerName)})</em></span></label>`).join("");
+    box.querySelectorAll('input[type="checkbox"]').forEach((c) =>
+      c.addEventListener("change", () => {
+        selected = [...box.querySelectorAll('input[type="checkbox"]:checked')].map((x) => x.value);
+        renderSendFrom(r.accounts);
+      }));
+    renderSendFrom(r.accounts);
     $("btn-goa-test").disabled = false;
-    note.textContent = "Uses your GNOME Online Accounts — tokens stay in the GNOME keyring, outpost never stores them.";
+    note.textContent = "Uses your GNOME Online Accounts — tokens stay in the GNOME keyring, outpost never stores them. Replies go out from the account that received the thread.";
   } catch (e) {
-    sel.innerHTML = `<option value="">Couldn't load</option>`;
+    box.innerHTML = `<p class="sectnote">Couldn't load</p>`;
     note.textContent = "Couldn't reach GNOME Online Accounts: " + e.message;
   }
 }
@@ -815,9 +841,16 @@ $("btn-goa-test").addEventListener("click", async () => {
   const out = $("tout-goa");
   out.textContent = "…"; out.className = "testout";
   try {
-    const r = await api("/api/goa/test", { method: "POST", body: JSON.stringify({ account_id: $("s-goa_account").value }) });
-    out.textContent = r.ok ? "✓ " + (r.email || "") : "✗ " + (r.error || "");
-    out.className = "testout " + (r.ok ? "ok" : "err");
+    const ids = [...document.querySelectorAll('#goa-accounts input[type="checkbox"]:checked')].map((c) => c.value);
+    if (!ids.length) { out.textContent = "✗ select at least one account"; out.className = "testout err"; return; }
+    const results = [];
+    for (const id of ids) {
+      const r = await api("/api/goa/test", { method: "POST", body: JSON.stringify({ account_id: id }) });
+      results.push((r.ok ? "✓ " : "✗ ") + (r.email || id) + (r.ok ? "" : ": " + (r.error || "")));
+    }
+    const okAll = results.every((x) => x.startsWith("✓"));
+    out.textContent = results.join(" · ");
+    out.className = "testout " + (okAll ? "ok" : "err");
   } catch (e) { out.textContent = "✗ " + e.message; out.className = "testout err"; }
 });
 document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", async () => {

@@ -332,6 +332,9 @@ button.primary {
 button.destruct { background: none; border: none; color: #ff3b30; font-size: 17px; padding: 10px; cursor: pointer; }
 .secttl { font-size: 13px; text-transform: uppercase; color: var(--muted); margin: 20px 16px 6px; letter-spacing: 0.3px; }
 .sectnote { font-size: 13px; color: var(--muted); margin: 6px 16px 0; line-height: 1.4; }
+.goa-check { display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 14px; cursor: pointer; }
+.goa-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.goa-check em { color: var(--muted); font-style: normal; font-size: 12px; }
 .cfgdot { font-size: 12px; color: var(--muted); }
 .cfgdot.yes { color: #34c759; }
 .testrow { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 0.5px solid var(--hairline); font-size: 17px; }

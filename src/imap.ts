@@ -859,6 +859,8 @@ export interface UnseenMail {
   html?: string;   // decoded text/html part ("" when none) for rich rendering
   returnPath: string;
   messageId: string; // ENVELOPE message-id — used to thread SMS replies
+  /** GOA account id this arrived on (multi-account setups; undefined otherwise). */
+  viaAccount?: string;
 }
 
 /** Fetch UNSEEN messages from a mailbox (INBOX by default, oldest first), then mark them \Seen. */

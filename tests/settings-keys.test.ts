@@ -17,7 +17,7 @@ const nonSecret = keysOf("NON_SECRET");
 const VISIBLE = [
   "imap_host", "imap_port", "imap_user",
   "smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_secure",
-  "email_provider", "goa_account",
+  "email_provider", "goa_account", "goa_accounts", "goa_send_from",
   "matrix_homeserver", "matrix_user_id",
   "e2ee_url", "e2ee_handle",
   "llm_url", "llm_model", "llm_enabled", "llm_threshold", "llm_timeout",
