@@ -499,7 +499,10 @@ export class NinePClient {
           if (b.length === 0) break;
           chunks.push(b);
           off += b.length;
-          if (b.length < 8192) break;
+          // No short-read break: the server caps a read at msize-11
+          // (8181 with the default 8192 msize), so a full first chunk
+          // is shorter than the 8192 requested. Only a zero-length
+          // read means EOF; otherwise a >8181-byte file truncates.
         }
         return new TextDecoder().decode(Buffer.concat(chunks));
       } finally {

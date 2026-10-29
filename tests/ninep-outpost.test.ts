@@ -78,4 +78,9 @@ describe("outpost 9P tree", () => {
       c.close();
     }
   });
+
+  test("missing database fails with a plain message, not a sqlite stack", () => {
+    expect(() => startOutpostNinep({ dbPath: join(tmp, "nope.db"), port: 0 }))
+      .toThrow(/outpost database not found: .*nope\.db/);
+  });
 });

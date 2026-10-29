@@ -14,6 +14,7 @@
 // dir names its contact directly.
 
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serveNineP, type DirNode, type FileNode, type Node } from "./ninep.ts";
@@ -141,6 +142,12 @@ export function buildOutpostTree(db: Database): DirNode {
 }
 
 export function startOutpostNinep(opts: { dbPath: string; port: number; hostname?: string }) {
+  if (!existsSync(opts.dbPath)) {
+    throw new Error(
+      `outpost database not found: ${opts.dbPath}\n` +
+      `Run the outpost app once to create it, or set OUTPOST_DATA to the directory holding outpost.db.`
+    );
+  }
   const db = new Database(opts.dbPath, { readonly: true });
   return serveNineP(buildOutpostTree(db), { port: opts.port, hostname: opts.hostname });
 }
@@ -149,6 +156,11 @@ if (import.meta.main) {
   const here = dirname(fileURLToPath(import.meta.url));
   const dataDir = process.env.OUTPOST_DATA || join(here, "..", "data");
   const port = Number(process.env.NINEP_PORT || 9029);
-  startOutpostNinep({ dbPath: join(dataDir, "outpost.db"), port });
+  try {
+    startOutpostNinep({ dbPath: join(dataDir, "outpost.db"), port });
+  } catch (e: any) {
+    console.error(`outpost 9P: ${e.message}`);
+    process.exit(1);
+  }
   console.log(`outpost 9P (read-only) on 127.0.0.1:${port} db ${join(dataDir, "outpost.db")}`);
 }
